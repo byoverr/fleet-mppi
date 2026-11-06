@@ -1,0 +1,8 @@
+BM_CostCritic/threads:1/scene:0/bitmask:0       2431 us         2431 us            3 colli
+BM_CostCritic/threads:1/scene:1/bitmask:0      16052 us        16052 us            3 colli
+BM_CostCritic/threads:1/scene:0/bitmask:1        454 us          454 us            3 colli
+BM_CostCritic/threads:1/scene:1/bitmask:1        626 us          626 us            3 colli
+BM_FullCycle/threads:1/scene:0/bitmask:0/critics:1       1.54 ms         1.54 ms            3 critics_ms=0.369191 gen_ms=0.908855 update_ms=0.118748
+BM_FullCycle/threads:1/scene:1/bitmask:0/critics:1       14.9 ms         14.9 ms            3 critics_ms=13.702 gen_ms=0.935555 update_ms=0.124292
+BM_FullCycle/threads:1/scene:0/bitmask:1/critics:1       1.58 ms         1.58 ms            3 critics_ms=0.401752 gen_ms=0.905947 update_ms=0.118292
+BM_FullCycle/threads:1/scene:1/bitmask:1/critics:1       1.85 ms         1.85 ms            3 critics_ms=0.671283 gen_ms=0.909716 update_ms=0.119284

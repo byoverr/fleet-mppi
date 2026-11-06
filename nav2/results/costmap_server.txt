@@ -1,0 +1,6 @@
+BM_CostmapUpdate/config:0/legacy:0      0.042 ms        0.042 ms            3 lethal_cells=71 turtlebot 3x3m@0.05 infl0.55 360beams inflation
+BM_CostmapUpdate/config:1/legacy:0      0.132 ms        0.132 ms            3 lethal_cells=273 amr 6x6m@0.05 infl1.0 720beams inflation
+BM_CostmapUpdate/config:2/legacy:0      0.584 ms        0.584 ms            3 lethal_cells=376 big 30x30m@0.1 infl5.0 1080beams inflation
+BM_CostmapUpdate/config:0/legacy:1      0.042 ms        0.042 ms            3 lethal_cells=77 turtlebot 3x3m@0.05 infl0.55 360beams legacy-inflation
+BM_CostmapUpdate/config:1/legacy:1      0.154 ms        0.154 ms            3 lethal_cells=269 amr 6x6m@0.05 infl1.0 720beams legacy-inflation
+BM_CostmapUpdate/config:2/legacy:1      0.505 ms        0.504 ms            3 lethal_cells=376 big 30x30m@0.1 infl5.0 1080beams legacy-inflation

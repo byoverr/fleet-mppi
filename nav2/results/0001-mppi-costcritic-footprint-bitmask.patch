@@ -1,0 +1,61 @@
+diff -ruN a/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp
+--- a/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp	2026-11-03 13:33:02.974899008 +0000
++++ b/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp	2026-11-03 13:33:03.013899008 +0000
+@@ -28,6 +28,7 @@
+ #include "nav2_mppi_controller/critic_function.hpp"
+ #include "nav2_mppi_controller/models/state.hpp"
+ #include "nav2_mppi_controller/tools/utils.hpp"
++#include "nav2_mppi_controller/tools/footprint_bitmask.hpp"
+ 
+ namespace mppi::critics
+ {
+@@ -76,6 +77,13 @@
+     if (consider_footprint_ &&
+       (cost >= possible_collision_cost_ || possible_collision_cost_ < 1.0f))
+     {
++      // the bitmask certifies most poses free without the exact (perimeter) footprint check
++      if (use_bitmask_ && fp_bitmask_.ready() &&
++        !fp_bitmask_.mayCollide(
++          static_cast<double>(x), static_cast<double>(y), static_cast<double>(theta)))
++      {
++        return false;
++      }
+       score_cost = static_cast<float>(collision_checker_.footprintCostAtPose(
+           static_cast<double>(x), static_cast<double>(y), static_cast<double>(theta),
+           footprint));
+@@ -166,6 +174,10 @@
+   std::string inflation_layer_name_;
+ 
+   int num_threads_{-1};
++  bool use_bitmask_{true};
++  int bitmask_heading_bins_{128};
++  int bitmask_subcell_bins_{2};
++  mppi::FootprintBitmask fp_bitmask_;
+   unsigned int power_{0};
+ };
+ 
+diff -ruN a/nav2_mppi_controller/src/critics/cost_critic.cpp b/nav2_mppi_controller/src/critics/cost_critic.cpp
+--- a/nav2_mppi_controller/src/critics/cost_critic.cpp	2026-11-03 13:33:02.992899008 +0000
++++ b/nav2_mppi_controller/src/critics/cost_critic.cpp	2026-11-03 13:33:03.020899008 +0000
+@@ -37,6 +37,9 @@
+   getParam(near_goal_distance_, "near_goal_distance", 0.5f);
+   getParam(inflation_layer_name_, "inflation_layer_name", std::string(""));
+   getParam(num_threads_, "num_threads", -1);
++  getParam(use_bitmask_, "use_footprint_bitmask", true);
++  getParam(bitmask_heading_bins_, "footprint_bitmask_heading_bins", 128);
++  getParam(bitmask_subcell_bins_, "footprint_bitmask_subcell_bins", 2);
+   getParam(trajectory_point_step_, "trajectory_point_step", 2);
+ 
+   // Normalized by cost value to put in same regime as other weights
+@@ -178,6 +181,11 @@
+     // footprint may have changed since initialization if user has dynamic footprints
+     possible_collision_cost_ = findCircumscribedCost(costmap_ros_);
+     footprint = costmap_ros_->getRobotFootprint();
++    if (use_bitmask_) {
++      fp_bitmask_.configure(
++        footprint, costmap->getResolution(), bitmask_heading_bins_, bitmask_subcell_bins_);
++      fp_bitmask_.buildPlane(*costmap, is_tracking_unknown_);
++    }
+   }
+ 
+   // If near the goal, don't apply the preferential term since the goal is near obstacles

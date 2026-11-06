@@ -1,0 +1,1 @@
+trajectories checked 180000, colliding 0, cost mismatches 0, fail_flag mismatches 0

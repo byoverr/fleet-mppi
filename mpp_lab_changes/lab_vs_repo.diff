@@ -1,0 +1,133 @@
+--- a/src/mpp/runner.py
++++ b/src/mpp/runner.py
+@@ -35,6 +35,10 @@
+     nav: NavConfig = field(default_factory=NavConfig)
+     lidar_noise: float = 0.0
+     sensor: str = "lidar"  # "lidar" (LDS-01, 360 deg) or "depth" (RealSense D435, 87 deg)
++    # mark this many metres behind every obstacle hit as occupied until seen free (0 = off)
++    obstacle_shadow: float = 0.0
++    unseen_dilate: float = 0.0  # lab: see Costmap.unseen_dilate
++    unknown_cost: float = 0.0  # lab: see Costmap.unknown_cost
+ 
+ 
+ @dataclass
+@@ -83,6 +87,9 @@
+         layout, scenario, start, lidar_noise=cfg.lidar_noise, seed=cfg.seed, sensor=cfg.sensor
+     )
+     costmap = Costmap.from_layout(layout, robot_radius=BURGER.radius)
++    costmap.shadow = cfg.obstacle_shadow
++    costmap.unseen_dilate = cfg.unseen_dilate
++    costmap.unknown_cost = cfg.unknown_cost
+     gp = make_global_planner(cfg.global_planner, seed=cfg.seed, **cfg.global_kwargs)
+     local_kwargs = dict(cfg.local_kwargs)
+     if cfg.local_planner in ("mppi", "log_mppi"):
+--- a/src/mpp/mapping/costmap.py
++++ b/src/mpp/mapping/costmap.py
+@@ -42,6 +42,15 @@
+         self.static = np.zeros((self.ny, self.nx), dtype=bool)
+         self.obstacles = np.zeros((self.ny, self.nx), dtype=bool)
+         self.version = 0
++        # metres behind every obstacle hit that are marked occupied until a ray sees them free:
++        # a sensor only sees the near faces of an object, its far side is otherwise "free"
++        self.shadow = 0.0
++        # lab: cells within `unseen_dilate` m of a sensed obstacle that no ray has observed yet
++        # count as occupied (object may extend there); `observed` tracks ray coverage
++        self.unseen_dilate = 0.0
++        # lab: Nav2 track_unknown_space analogue: never-observed cells get this soft cost
++        self.unknown_cost = 0.0
++        self.observed = np.zeros((self.ny, self.nx), dtype=bool)
+         self._static_near = self.static
+         self.update()
+ 
+@@ -76,7 +85,7 @@
+     def copy(self) -> Costmap:
+         other = object.__new__(Costmap)
+         other.__dict__.update(self.__dict__)
+-        for name in ("static", "obstacles", "lethal", "clearance", "cost", "_static_near"):
++        for name in ("static", "obstacles", "lethal", "clearance", "cost", "_static_near", "observed", "cost_global"):
+             setattr(other, name, getattr(self, name).copy())
+         other.origin = self.origin.copy()
+         return other
+@@ -86,6 +95,12 @@
+     def update(self) -> None:
+         """Recompute clearance and cost after the layers changed."""
+         self.lethal = self.static | self.obstacles
++        if getattr(self, "unseen_dilate", 0.0) > 0.0 and self.obstacles.any():
++            r = int(np.ceil(self.unseen_dilate / self.res))
++            yy, xx = np.mgrid[-r : r + 1, -r : r + 1]
++            disk = xx * xx + yy * yy <= r * r
++            near = ndimage.binary_dilation(self.obstacles, structure=disk)
++            self.lethal = self.lethal | (near & ~self.observed & ~self._static_near)
+         self._static_near = ndimage.binary_dilation(self.static, iterations=1)
+         if self.lethal.any():
+             edt = ndimage.distance_transform_edt(~self.lethal)
+@@ -96,6 +111,10 @@
+         c = np.exp(-self.cost_scaling * (self.clearance - self.inscribed))
+         c = np.where(self.clearance < self.inscribed, 1.0, c * 0.95)
+         c[self.clearance > self.inflation_radius] = 0.0
++        self.cost_global = c  # lab: what the global planner sees (no unknown-space cost)
++        if getattr(self, "unknown_cost", 0.0) > 0.0:
++            unk = ~self.observed & ~self._static_near & ~self.lethal
++            c = np.where(unk, np.maximum(c, self.unknown_cost), c)
+         self.cost = c
+         self.version += 1
+ 
+@@ -204,6 +223,7 @@
+         ix, iy = self.world_to_cell(pts[keep])
+         ok = self.in_bounds(ix, iy)
+         self.obstacles[iy[ok], ix[ok]] = False
++        self.observed[iy[ok], ix[ok]] = True
+ 
+         # marking
+         hp = origin + r[hit, None] * dirs[hit]
+@@ -212,8 +232,18 @@
+         ix, iy = ix[ok], iy[ok]
+         new = ~self._static_near[iy, ix]
+         self.obstacles[iy[new], ix[new]] = True
++        self.observed[iy, ix] = True
++        if self.shadow > 0.0:
++            # cells behind each new hit, along its ray, up to `shadow` metres
++            behind = np.arange(0.5 * self.res, self.shadow, 0.5 * self.res)
++            sp = hp[ok][new][:, None, :] + behind[None, :, None] * dirs[hit][ok][new][:, None, :]
++            sx, sy = self.world_to_cell(sp.reshape(-1, 2))
++            keep = self.in_bounds(sx, sy)
++            sx, sy = sx[keep], sy[keep]
++            free_static = ~self._static_near[sy, sx]
++            self.obstacles[sy[free_static], sx[free_static]] = True
+ 
+-        changed = bool((before != self.obstacles).any())
++        changed = bool((before != self.obstacles).any()) or self.unseen_dilate > 0.0 or self.unknown_cost > 0.0
+         if changed:
+             self.update()
+         return changed
+--- a/src/mpp/sim/scene.py
++++ b/src/mpp/sim/scene.py
+@@ -60,6 +60,13 @@
+     layout: Layout, scenario: Scenario | None, start: Pose2D, sensor: str = "lidar"
+ ) -> mujoco.MjSpec:
+     spec = mujoco.MjSpec.from_file(str(MJCF_PATH))
++    import os
++
++    v = float(os.environ.get("MPP_MAX_V", "0.22"))
++    if v != 0.22:  # lab override: stronger, faster wheel servos for a faster robot
++        for a in spec.actuators:
++            a.ctrlrange = [-v / 0.033 * 1.6, v / 0.033 * 1.6]
++            a.forcerange = [-0.1 * v / 0.22, 0.1 * v / 0.22]
+     spec.modelname = "warehouse"
+     spec.visual.global_.offwidth = 1280
+     spec.visual.global_.offheight = 720
+--- a/src/mpp/robot/model.py
++++ b/src/mpp/robot/model.py
+@@ -35,7 +35,11 @@
+         return 0.5 * r * (w_left + w_right), r * (w_right - w_left) / self.wheel_separation
+ 
+ 
+-BURGER = RobotParams()
++import os as _os
++
++# lab override: a faster AMR-like robot (MPP_MAX_V in m/s)
++_V = float(_os.environ.get("MPP_MAX_V", "0.22"))
++BURGER = RobotParams(max_v=_V) if _V != 0.22 else RobotParams()
+ 
+ 
+ @dataclass(frozen=True)

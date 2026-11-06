@@ -1,0 +1,16 @@
+BM_FullCycle/threads:1/scene:0/bitmask:0/critics:0/min_time:2.000/process_time/real_time_median       2.33 ms         2.33 ms            3
+BM_FullCycle/threads:8/scene:0/bitmask:0/critics:0/min_time:2.000/process_time/real_time_median       2.33 ms         2.33 ms            3
+BM_FullCycle/threads:1/scene:1/bitmask:0/critics:0/min_time:2.000/process_time/real_time_median       2.34 ms         2.34 ms            3
+BM_FullCycle/threads:8/scene:1/bitmask:0/critics:0/min_time:2.000/process_time/real_time_median       2.33 ms         2.33 ms            3
+BM_FullCycle/threads:1/scene:0/bitmask:1/critics:0/min_time:2.000/process_time/real_time_median       2.33 ms         2.33 ms            3
+BM_FullCycle/threads:8/scene:0/bitmask:1/critics:0/min_time:2.000/process_time/real_time_median       2.36 ms         2.36 ms            3
+BM_FullCycle/threads:1/scene:1/bitmask:1/critics:0/min_time:2.000/process_time/real_time_median       2.33 ms         2.33 ms            3
+BM_FullCycle/threads:8/scene:1/bitmask:1/critics:0/min_time:2.000/process_time/real_time_median       2.36 ms         2.36 ms            3
+BM_FullCycle/threads:1/scene:0/bitmask:0/critics:1/min_time:2.000/process_time/real_time_median       2.56 ms         2.56 ms            3
+BM_FullCycle/threads:8/scene:0/bitmask:0/critics:1/min_time:2.000/process_time/real_time_median       2.59 ms         3.90 ms            3
+BM_FullCycle/threads:1/scene:1/bitmask:0/critics:1/min_time:2.000/process_time/real_time_median       16.0 ms         16.0 ms            3
+BM_FullCycle/threads:8/scene:1/bitmask:0/critics:1/min_time:2.000/process_time/real_time_median       4.76 ms         21.4 ms            3
+BM_FullCycle/threads:1/scene:0/bitmask:1/critics:1/min_time:2.000/process_time/real_time_median       2.57 ms         2.57 ms            3
+BM_FullCycle/threads:8/scene:0/bitmask:1/critics:1/min_time:2.000/process_time/real_time_median       2.57 ms         3.86 ms            3
+BM_FullCycle/threads:1/scene:1/bitmask:1/critics:1/min_time:2.000/process_time/real_time_median       4.39 ms         4.39 ms            3
+BM_FullCycle/threads:8/scene:1/bitmask:1/critics:1/min_time:2.000/process_time/real_time_median       2.93 ms         6.48 ms            3

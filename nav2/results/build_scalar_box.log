@@ -1,0 +1,43 @@
+Starting >>> nav2_mppi_controller
+[-1793727746175629824.000s] WARNING:colcon.colcon_core.shell:The following packages are in the workspace but haven't been built:
+- nav2_common
+- nav2_msgs
+- nav2_voxel_grid
+- nav2_ros_common
+- nav2_util
+- nav2_behavior_tree
+- nav2_lifecycle_manager
+- nav2_map_server
+- nav2_costmap_2d
+- nav2_core
+They are being used from the following locations instead:
+- /ws/install/nav2_common
+- /ws/install/nav2_msgs
+- /ws/install/nav2_voxel_grid
+- /ws/install/nav2_ros_common
+- /ws/install/nav2_util
+- /ws/install/nav2_behavior_tree
+- /ws/install/nav2_lifecycle_manager
+- /ws/install/nav2_map_server
+- /ws/install/nav2_costmap_2d
+- /ws/install/nav2_core
+To suppress this warning ignore these packages in the workspace:
+--packages-ignore nav2_common nav2_msgs nav2_voxel_grid nav2_ros_common nav2_util nav2_behavior_tree nav2_lifecycle_manager nav2_map_server nav2_costmap_2d nav2_core
+--- stderr: nav2_mppi_controller
+In file included from /usr/include/eigen3/Eigen/Core:317,
+                 from /usr/include/eigen3/Eigen/Dense:1,
+                 from /ws/src/navigation2/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp:19,
+                 from /ws/src/navigation2/nav2_mppi_controller/include/nav2_mppi_controller/critic_manager.hpp:32,
+                 from /ws/src/navigation2/nav2_mppi_controller/src/critic_manager.cpp:15:
+In static member function ‘static Eigen::internal::redux_impl<Func, Evaluator, 0, 0>::Scalar Eigen::internal::redux_impl<Func, Evaluator, 0, 0>::run(const Evaluator&, const Func&, const XprType&) [with XprType = Eigen::Array<float, -1, 1>; Func = Eigen::internal::scalar_sum_op<float, float>; Evaluator = Eigen::internal::redux_evaluator<Eigen::Array<float, -1, 1> >]’,
+    inlined from ‘typename Eigen::internal::traits<T>::Scalar Eigen::DenseBase<Derived>::redux(const Func&) const [with BinaryOp = Eigen::internal::scalar_sum_op<float, float>; Derived = Eigen::Array<float, -1, 1>]’ at /usr/include/eigen3/Eigen/src/Core/Redux.h:418:56,
+    inlined from ‘typename Eigen::internal::traits<T>::Scalar Eigen::DenseBase<Derived>::sum() const [with Derived = Eigen::Array<float, -1, 1>]’ at /usr/include/eigen3/Eigen/src/Core/Redux.h:463:25,
+    inlined from ‘void mppi::CriticManager::evalTrajectoriesScores(mppi::CriticData&)’ at /ws/src/navigation2/nav2_mppi_controller/src/critic_manager.cpp:109:38:
+/usr/include/eigen3/Eigen/src/Core/Redux.h:202:9: warning: null pointer dereference [-Wnull-dereference]
+  202 |     res = eval.coeffByOuterInner(0, 0);
+      |     ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+---
+Finished <<< nav2_mppi_controller [2min 14s]
+
+Summary: 1 package finished [2min 14s]
+  1 package had stderr output: nav2_mppi_controller

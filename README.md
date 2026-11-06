@@ -1,0 +1,44 @@
+# Лаборатория: эффективность MPPI для флота
+
+Эксперименты отдельно от репозитория motion-planning-practice. Цель и выводы: `SUMMARY.md`.
+Разбор статей: `~/Desktop/Статьи про эффективность планировщиков/00_РАЗБОР.md`.
+
+## Что где
+
+- `SUMMARY.md`, `VERIFICATION.md`: общие выводы и проверка первого раунда.
+- `nav2/`: битовые маски в CostCritic. Итоги в `nav2/RESULTS.md`, код в `nav2/patch/`, замеры в `nav2/results/`.
+- `nav2/workspace_snapshot/`: рабочая копия Nav2 из контейнера `nav2lab`, база: коммит из `nav2_commit.txt`.
+- `nav2/trajectory_buffer/`: буфер траектории на роботе (пакет ROS 2).
+- `expW/`: модель сети и частоты сервера. Итоги в `expW/RESULTS.md`.
+- `expB/`, `expC/`, `costcritic_bench/`: скрипты первого раунда.
+- `mpp/`: код симулятора из репозитория плюс правки лаборатории (`mpp_lab_changes/lab_vs_repo.diff`).
+- `literature_txt/`: текст статей, извлечённый из PDF (только локально, не в git). `tools/`: служебные скрипты.
+
+## Как запускать
+
+```sh
+cd mpp && uv sync && cd ..
+cd expW && MPP_MAX_V=0.6 uv run --project ../mpp python run_grid.py main out.jsonl 3
+```
+
+Контейнер Nav2: `docker start nav2lab`. Образ собирается из `nav2/Dockerfile`.
+
+## Что случилось при переносе (6 ноября 2026)
+
+Лаборатория лежала во временной папке, и часть файлов там уже исчезла (папки помечены 4 ноября 00:00).
+Причина точно не установлена.
+
+Восстановлено:
+- `mpp/` из коммита репозитория 3ceeb6c; сохранившиеся правки лаборатории наложены поверх. Правка
+  `src/mpp/robot/model.py` (`MPP_MAX_V`) пропала и применена заново из истории сессии.
+- `expB/b2_clutter.py`, `expB/b3_power.py`, `expC/c1_general.py`, `expC/c2_baselines.py`, `VERIFICATION.md`,
+  `costcritic_bench/bench.cpp`, `costcritic_bench/prep.py` из истории сессии.
+- Недостающие результаты и логи сборки в `nav2/results/` из контейнера.
+
+Проверка: 8 случайно выбранных эпизодов из `expW` пересчитаны на новом месте и совпали с записанными;
+в копии `mpp` тесты проходят (51 passed, 1 skipped).
+
+Потеряно безвозвратно:
+- логи `expB/*.log` и `expC/c1.log`, `expC/c2u_v022.log`; их итоги описаны в `VERIFICATION.md`;
+- `data/rollouts_*.npz`, `costcritic_bench/run.sh`, `run_tight.sh`, `results*.txt`, `scenes/`.
+  Это первый микробенчмарк; его заменили замеры в настоящем Nav2.
