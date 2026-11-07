@@ -40,6 +40,7 @@ import mujoco
 import numpy as np
 
 from mpp.geometry import rollout_unicycle
+from drive import DriveModel, LaggedDrive, ModelMPPI, model_rollout
 from mpp.mapping.costmap import Costmap
 from mpp.planning.local_planners import make_local_planner
 from mpp.robot.model import BURGER
@@ -98,6 +99,11 @@ class NetConfig:
     adapt_near: float = 0.25
     adapt_look: float = 1.0
     adapt_dev: float = 0.05
+    # Model mismatch (drive.py): the true drive of the robot, and the model the planner and
+    # the robot/server checks use (None = the plain unicycle of mpp). Tuples (tau_v, tau_w, k_v, k_w).
+    plant: tuple | None = None
+    planner_model: tuple | None = None
+    log_drive: bool = False  # return (t, v_cmd, w_cmd, v_meas, w_meas) per substep
 
 
 class Channel:
@@ -146,6 +152,12 @@ def _substep(sim, update_boxes: bool) -> None:
 def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
     wall0 = time.perf_counter()
     layout, scenario, start, goal, sim, cm_srv, nav = make_episode(cfg)
+    pm = DriveModel(*net.planner_model) if net.planner_model is not None else None
+    if pm is not None and type(nav.lp).__name__ == "MPPI":
+        nav.lp.__class__ = ModelMPPI
+        nav.lp.model = pm
+    drive = LaggedDrive(DriveModel(*net.plant), SUB) if net.plant is not None else None
+    drive_log = []
     robot = BURGER
     strat = net.strategy
     link = net.link
@@ -236,6 +248,7 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
     srv_plan = None  # (stamp, pose, seq, regular MPPI plan?, server tick) of the last plan sent
     why = dict(first=0, period=0, dev=0, near=0, short=0, other=0, skip=0)
     check_ms = []
+    plan_err = []  # reported pose vs where the last plan put it, m (every fresh state)
     n_look = max(int(round(net.adapt_look / dt)), 1)
 
     def need_plan() -> bool:
@@ -249,21 +262,21 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
     def _need_plan() -> str:
         if srv_plan is None:
             return "first"
-        p_stamp, p_pose, p_seq, regular, p_tick = srv_plan
+        p_stamp, p_pose, p_vel, p_seq, regular, p_tick = srv_plan
         if srv_status is not None or not regular:
             return "other"  # done, or the last command was a stop / backup / constant one
         if srv_tick_i - p_tick >= net.adapt_max_every:
             return "period"
-        stamp, pose, _ = srv_latest_state
+        stamp, pose, vel_s = srv_latest_state
         k = int(math.floor((stamp - p_stamp) / dt + EPS))
         if k + n_look > len(p_seq):
             return "short"
         if k > 0:
-            pred = rollout_unicycle(p_pose, p_seq[None, :k, 0], p_seq[None, :k, 1], dt)[0, -1]
+            pred = model_rollout(p_pose, p_seq[None, :k, 0], p_seq[None, :k, 1], dt, p_vel, pm)[0, -1]
             if math.hypot(pred[0] - pose[0], pred[1] - pose[1]) > net.adapt_dev:
                 return "dev"
         u = np.repeat(p_seq[k:k + n_look], 2, axis=0)  # 50 ms steps
-        tr = rollout_unicycle(pose, u[None, :, 0], u[None, :, 1], dt / 2)[0]
+        tr = model_rollout(pose, u[None, :, 0], u[None, :, 1], dt / 2, vel_s, pm)[0]
         if cm_srv.clearance_at(tr[:, :2]).min() - robot.radius < net.adapt_near:
             return "near"
         return "skip"
@@ -298,6 +311,13 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
                     srv_latest_state = (m["stamp"], m["pose"], m["vel"])
                     srv_new_state = True
                 acked_ver = max(acked_ver, m["ack"])
+            if srv_new_state and srv_plan is not None and srv_plan[4]:
+                p_stamp, p_pose, p_vel, p_seq = srv_plan[:4]
+                st_, ps_, _ = srv_latest_state
+                kk = int(math.floor((st_ - p_stamp) / dt + EPS))
+                if 0 < kk <= len(p_seq):
+                    pr = model_rollout(p_pose, p_seq[None, :kk, 0], p_seq[None, :kk, 1], dt, p_vel, pm)[0, -1]
+                    plan_err.append(math.hypot(pr[0] - ps_[0], pr[1] - ps_[1]))
             if net.adaptive:
                 srv_turn = srv_new_state and need_plan()
             else:
@@ -350,7 +370,7 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
                     nb += 8 * len(nav.lp.path) // 4  # path decimated to 20 cm when sent
                 send(down_q, step_i + d_steps, msg, nb, up=False)
                 regular = from_lp and T_mppi is not None and nav.last_local.status == "ok"
-                srv_plan = (stamp, pose, seq, regular, srv_tick_i)
+                srv_plan = (stamp, pose, vel, seq, regular, srv_tick_i)
 
         # ---------------- robot: receive commands
         got = False
@@ -420,7 +440,7 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
                     u = np.vstack([u, np.zeros((n - len(u), 2))])
                 # roll out at 25 ms resolution so a 10 cm cell is not skipped at 0.6 m/s
                 u = np.repeat(u, 4, axis=0)
-                tr = rollout_unicycle(pose_r, u[None, :, 0], u[None, :, 1], dt / 4)[0]
+                tr = model_rollout(pose_r, u[None, :, 0], u[None, :, 1], dt / 4, vel_r, pm)[0]
                 now_c = float(cm_rob.clearance_at(np.array(pose_r[:2])))
                 thr = min(robot.radius + net.safety_margin, now_c - 0.005)
                 if (cm_rob.clearance_at(tr[:, :2]) < thr).any():
@@ -433,7 +453,9 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
             hold_time += SUB
         if srv_status is None and abs(vel_r[0]) < 0.01 and abs(vel_r[1]) < 0.05:
             stopped_time += SUB
-        sim.set_cmd(*cmd)
+        if net.log_drive:
+            drive_log.append((t, cmd[0], cmd[1], vel_r[0], vel_r[1]))
+        sim.set_cmd(*(drive(*cmd) if drive is not None else cmd))
 
         # ---------------- physics
         _substep(sim, update_boxes=(step_i + 1) % ticks_per_srv == 0)
@@ -518,5 +540,10 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
                    dev=net.adapt_dev) if net.adaptive else None,
         why=why if net.adaptive else None,
         check_ms=round(float(np.mean(check_ms)), 4) if check_ms else 0.0,
+        plan_err=round(float(np.mean(plan_err)), 4) if plan_err else None,
+        plan_err95=round(float(np.percentile(plan_err, 95)), 4) if plan_err else None,
+        plant=list(net.plant) if net.plant is not None else None,
+        planner_model=list(net.planner_model) if net.planner_model is not None else None,
+        drive_log=drive_log if net.log_drive else None,
         wall=round(time.perf_counter() - wall0, 2),
     )
