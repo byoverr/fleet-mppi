@@ -1,0 +1,29 @@
+scene=0 batch=2000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=0 batch=2000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=0 batch=1000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=0 batch=1000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=0 batch=256 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=0 batch=256 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=0 batch=257 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=0 batch=257 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=1 batch=2000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=1 batch=2000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=1 batch=1000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=1 batch=1000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=1 batch=256 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=1 batch=256 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=1 batch=257 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=1 batch=257 clamp_raw_controls=1 cycles=30 mismatches=0
+TOTAL mismatches=0 over 23607360 trajectory points x 8 arrays
+== FP=big fast_reductions
+TOTAL fast_reductions: mismatches=0 over 3840 cycles, 233461760 trajectory points
+== FP=big negative control PathAlignCritic.cost_weight 14
+TOTAL PathAlignCritic.cost_weight: mismatches=62117527 over 3840 cycles, 233461760 trajectory points
+== FP=big blocked PathAlign (known not equivalent)
+TOTAL PathAlignCritic.blocked_evaluation: mismatches=0 over 3840 cycles, 233461760 trajectory points
+== FP=amr fast_reductions
+TOTAL fast_reductions: mismatches=0 over 3840 cycles, 233461760 trajectory points
+== FP=amr negative control PathAlignCritic.cost_weight 14
+TOTAL PathAlignCritic.cost_weight: mismatches=48342616 over 3840 cycles, 233461760 trajectory points
+== FP=amr blocked PathAlign (known not equivalent)
+TOTAL PathAlignCritic.blocked_evaluation: mismatches=0 over 3840 cycles, 233461760 trajectory points

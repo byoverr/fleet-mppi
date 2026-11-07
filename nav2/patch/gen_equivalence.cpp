@@ -126,7 +126,7 @@ int main()
   rclcpp::init(0, nullptr);
   size_t total = 0, checked = 0;
   for (int scene : {0, 1}) {
-    for (int batch : {2000, 1000, 256}) {
+    for (int batch : {2000, 1000, 256, 257}) {
       for (bool clamp : {false, true}) {
         auto costmap_ros = makeCostmapRos();
         fillScene(costmap_ros, scene);
@@ -145,6 +145,8 @@ int main()
           params.emplace_back("dummy.vx_max", 1.67);
           params.emplace_back("dummy.clamp_raw_controls", clamp);
           params.emplace_back("dummy.fuse_generation", f == 1);
+          params.emplace_back("dummy.fuse_generation_registers", f == 1);
+          params.emplace_back("dummy.fast_reductions", f == 1);
           params.emplace_back("dummy.CostCritic.consider_footprint", true);
           params.emplace_back("dummy.CostCritic.inflation_layer_name", "inflation_layer");
           params.emplace_back("dummy.CostCritic.near_goal_distance", 1.0);

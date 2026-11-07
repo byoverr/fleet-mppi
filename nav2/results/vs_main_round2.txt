@@ -1,0 +1,12 @@
+main fp=amr wall_share=0.00 robots@20Hz=64.1 p99_ms=0.85 cpu_ms_per_cycle=0.78 
+ours fp=amr wall_share=0.00 robots@20Hz=80.5 p99_ms=0.71 cpu_ms_per_cycle=0.62 
+main fp=amr wall_share=0.50 robots@20Hz=42.1 p99_ms=1.71 cpu_ms_per_cycle=1.19 
+ours fp=amr wall_share=0.50 robots@20Hz=74.4 p99_ms=0.84 cpu_ms_per_cycle=0.67 
+main fp=amr wall_share=1.00 robots@20Hz=31.7 p99_ms=1.70 cpu_ms_per_cycle=1.58 
+ours fp=amr wall_share=1.00 robots@20Hz=74.3 p99_ms=0.77 cpu_ms_per_cycle=0.67 
+main fp=big wall_share=0.00 robots@20Hz=63.8 p99_ms=0.88 cpu_ms_per_cycle=0.78 
+ours fp=big wall_share=0.00 robots@20Hz=80.2 p99_ms=0.71 cpu_ms_per_cycle=0.62 
+main fp=big wall_share=0.50 robots@20Hz=6.5 p99_ms=15.03 cpu_ms_per_cycle=7.73 
+ours fp=big wall_share=0.50 robots@20Hz=66.2 p99_ms=1.06 cpu_ms_per_cycle=0.75 
+main fp=big wall_share=1.00 robots@20Hz=3.2 p99_ms=21.34 cpu_ms_per_cycle=15.61 
+ours fp=big wall_share=1.00 robots@20Hz=54.8 p99_ms=1.83 cpu_ms_per_cycle=0.91 

@@ -39,18 +39,29 @@
 namespace
 {
 
-constexpr double kRes = 0.1, kRobotX = 12.0, kRobotY = 15.0;
+constexpr double kRobotX = 12.0, kRobotY = 15.0;
+// Robot and map, FP=big (default) or FP=amr in the environment
+double kRes = 0.1, kInflation = 5.0, kWall = 1.7, kCorridor = 3.0;
+const char * kFootprint = "[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]";
+void selectRobot()
+{
+  const char * fp = std::getenv("FP");
+  if (fp && std::string(fp) == "amr") {  // 0.7 x 0.5 m AMR, 5 cm map, 2.4 m aisle
+    kFootprint = "[[0.35,0.25],[-0.35,0.25],[-0.35,-0.25],[0.35,-0.25]]";
+    kRes = 0.05; kInflation = 1.5; kWall = 0.6; kCorridor = 1.2;
+  }
+}
 
 std::shared_ptr<nav2_costmap_2d::Costmap2DROS> makeCostmapRos()
 {
   rclcpp::NodeOptions options;
   options.parameter_overrides({
     {"width", 30}, {"height", 30}, {"resolution", kRes},
-    {"footprint", "[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]"},
+    {"footprint", kFootprint},
     {"footprint_padding", 0.1},
     {"plugins", std::vector<std::string>{"inflation_layer"}},
     {"inflation_layer.plugin", "nav2_costmap_2d::InflationLayer"},
-    {"inflation_layer.inflation_radius", 5.0},
+    {"inflation_layer.inflation_radius", kInflation},
     {"inflation_layer.cost_scaling_factor", 0.7},
   });
   auto ros = std::make_shared<nav2_costmap_2d::Costmap2DROS>(options);
@@ -75,11 +86,11 @@ void fillScene(std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros, int scene)
       }
     };
   if (scene == 0) {
-    rect(8.0, kRobotY + 3.0, 28.0, kRobotY + 3.0);
-    rect(8.0, kRobotY - 3.0, 28.0, kRobotY - 3.0);
-    rect(19.0, kRobotY + 0.9, 19.6, kRobotY + 3.0);
+    rect(8.0, kRobotY + kCorridor, 28.0, kRobotY + kCorridor);
+    rect(8.0, kRobotY - kCorridor, 28.0, kRobotY - kCorridor);
+    rect(19.0, kRobotY + 0.3 * kCorridor, 19.6, kRobotY + kCorridor);
   } else {
-    rect(8.0, kRobotY + 1.7, 28.0, kRobotY + 1.7);
+    rect(8.0, kRobotY + kWall, 28.0, kRobotY + kWall);
   }
   const int rc = static_cast<int>(infl->getInflationRadius() / kRes);
   const int sx = cm->getSizeInCellsX(), sy = cm->getSizeInCellsY();
@@ -142,6 +153,9 @@ nav_msgs::msg::Path makePath(nav2::LifecycleNode::SharedPtr node, int st)
   return path;
 }
 
+double g_gen = 0, g_upd = 0;
+int g_n = 0;
+
 double run(int scene, int st, int which, int cycles)
 {
   auto costmap_ros = makeCostmapRos();
@@ -167,6 +181,7 @@ double run(int scene, int st, int which, int cycles)
   params.emplace_back("dummy.CostCritic.use_footprint_bitmask", true);
   params.emplace_back("dummy.fuse_generation", true);
   params.emplace_back("dummy.PathAlignCritic.blocked_evaluation", std::getenv("PA_BLOCKED") != nullptr);
+  params.emplace_back("dummy.fast_reductions", std::getenv("FAST") != nullptr);
   rclcpp::NodeOptions options;
   options.parameter_overrides(params);
   auto node = getDummyNode(options);
@@ -201,6 +216,9 @@ double run(int scene, int st, int which, int cycles)
     double g = 0, c = 0, u = 0;
     optimizer->timeStages(g, c, u);
     v[static_cast<size_t>(k)] = c;
+    g_gen += g;
+    g_upd += u;
+    ++g_n;
   }
   std::sort(v.begin(), v.end());
   return v.empty() ? 0.0 : v.at(v.size() / 2);
@@ -208,6 +226,7 @@ double run(int scene, int st, int which, int cycles)
 
 int main()
 {
+  selectRobot();
   rclcpp::init(0, nullptr);
   std::printf("critics time per cycle, us (median of 200), 2000 x 56, big robot, masks + fused gen\n");
   std::printf("| scene | state |");
@@ -231,9 +250,13 @@ int main()
   std::printf("\n");
   for (int scene : {0, 1}) {
     for (int st = 0; st < 4; ++st) {
+      g_gen = g_upd = 0;
+      g_n = 0;
       const double all = run(scene, st, 8, 200);
+      const double gen = g_gen / g_n, upd = g_upd / g_n;
       std::printf("| %s | %s |", scene ? "wall" : "corridor", kStates[st]);
       for (int c = 1; c < 8; ++c) {std::printf(" %.0f |", all - run(scene, st, 8 + c, 200));}
+      std::printf(" all critics %.0f | generation %.0f | update %.0f |", all, gen, upd);
       std::printf("\n");
       std::fflush(stdout);
     }

@@ -15,7 +15,7 @@
 // Fleet server: N independent MPPI controllers (own costmap each, default Nav2 critics,
 // 2000 x 56) shared by K worker threads. Robots alternate between the corridor and wall scenes.
 // Reports control cycles per second, per-cycle latency percentiles and CPU time per cycle.
-// Usage: fleet_server_benchmark <robots> <workers> <bitmask 0/1> <costcritic threads> <seconds> [wall_share] [batch] [fuse]
+// Usage: fleet_server_benchmark <robots> <workers> <bitmask 0/1> <costcritic threads> <seconds> [wall_share] [batch] [fuse: 0 off, 1 fused generation, 2 + fast reductions, 3 + register-blocked generation]
 
 #include <algorithm>
 #include <atomic>
@@ -175,6 +175,8 @@ int main(int argc, char ** argv)
     params.emplace_back("dummy.CostCritic.num_threads", cc_threads);
     params.emplace_back("dummy.CostCritic.use_footprint_bitmask", bitmask != 0);
     params.emplace_back("dummy.fuse_generation", fuse != 0);
+    params.emplace_back("dummy.fuse_generation_registers", fuse >= 3);
+    params.emplace_back("dummy.fast_reductions", fuse >= 2);
     rclcpp::NodeOptions options;
     options.parameter_overrides(params);
     R.node = getDummyNode(options);

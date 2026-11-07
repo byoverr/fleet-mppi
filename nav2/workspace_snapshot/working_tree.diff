@@ -102,6 +102,19 @@ index 3c5ea7d..418157d 100644
 +
 +add_executable(costmap_server_benchmark costmap_server_benchmark.cpp)
 +target_link_libraries(costmap_server_benchmark benchmark nav2_costmap_2d::nav2_costmap_2d_core nav2_costmap_2d::layers ${sensor_msgs_TARGETS})
+diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/critic_data.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/critic_data.hpp
+index ca37d32..ba3aa52 100644
+--- a/nav2_mppi_controller/include/nav2_mppi_controller/critic_data.hpp
++++ b/nav2_mppi_controller/include/nav2_mppi_controller/critic_data.hpp
+@@ -52,6 +52,8 @@ struct CriticData
+   std::optional<std::vector<bool>> path_pts_valid;
+   std::optional<size_t> furthest_reached_path_point;
+   std::vector<bool> trajectories_in_collision;
++  // lab: row reductions column by column (same sums, same order, vectorized over the batch)
++  bool fast_reductions{false};
+ };
+ 
+ }  // namespace mppi
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp
 index c285a14..80b34cc 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp
@@ -201,10 +214,10 @@ index f7ad2fd..1aea9b9 100644
    float weight_{0};
  };
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/motion_models.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/motion_models.hpp
-index 8ef9ea2..6a85c02 100644
+index 8ef9ea2..33cde86 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/motion_models.hpp
 +++ b/nav2_mppi_controller/include/nav2_mppi_controller/motion_models.hpp
-@@ -167,6 +167,46 @@ public:
+@@ -167,6 +167,57 @@ public:
      }
    }
  
@@ -240,6 +253,17 @@ index 8ef9ea2..6a85c02 100644
 +  }
 +
 +  /**
++   * @brief The per-step velocity limits predict() uses, for the register-blocked generation
++   */
++  void stepLimits(float & max_dvx, float & min_dvx, float & max_dwz, bool & clamp) const
++  {
++    max_dvx = model_dt_ * control_constraints_.ax_max;
++    min_dvx = model_dt_ * control_constraints_.ax_min;
++    max_dwz = model_dt_ * control_constraints_.az_max;
++    clamp = clamp_raw_controls_;
++  }
++
++  /**
 +   * @brief True if predict() has no delay shift, so predictColumn() reproduces it
 +   */
 +  bool hasNoModelDelay() const
@@ -252,10 +276,10 @@ index 8ef9ea2..6a85c02 100644
     * @brief With input pose, speed find the vehicle's output pose at pred_dt in future
     * @param pose pose of the robot
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
-index a431e56..bd8f7e5 100644
+index a431e56..8514ba8 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
 +++ b/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
-@@ -215,6 +215,13 @@ protected:
+@@ -215,6 +215,25 @@ protected:
     */
    void generateNoisedTrajectories();
  
@@ -266,18 +290,159 @@ index a431e56..bd8f7e5 100644
 +   */
 +  void generateFused();
 +
++  /**
++   * @brief generateFused() with each packet of trajectories carried through all time steps in
++   * registers (fuse_generation_registers). Same operations in the same order.
++   */
++  void generateFusedPackets();
++
++  /**
++   * @brief rowwise().sum() of (u - u_mean) * u_mean over the time steps, accumulated column by
++   * column (left to right, as Eigen does per row), vectorized over the batch.
++   */
++  void addControlCost(const Eigen::ArrayXXf & u, const Eigen::ArrayXf & mean, float gamma);
++
    /**
     * @brief Apply inter-iteration dynamic feasibility constraints on the
     * first control sequence element before noise generation
-@@ -313,6 +320,8 @@ protected:
+@@ -313,6 +332,11 @@ protected:
    OptimalTrajectoryValidator::Ptr trajectory_validator_;
  
    models::OptimizerSettings settings_;
 +  bool fuse_generation_{false};
++  bool fuse_generation_registers_{false};
++  bool fast_reductions_{false};
++  Eigen::ArrayXf cc_acc_;
 +  Eigen::ArrayXf fg_yaw_, fg_x_, fg_y_, fg_cos_, fg_sin_, fg_dx_, fg_dy_;
    size_t fallback_count_{0};
  
    models::State state_;
+diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp
+index 9fa3714..61f2adf 100644
+--- a/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp
++++ b/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp
+@@ -19,6 +19,7 @@
+ #include <Eigen/Dense>
+ 
+ #include <algorithm>
++#include <type_traits>
+ #include <chrono>
+ #include <cmath>
+ #include <string>
+@@ -291,6 +292,67 @@ auto shortest_angular_distance(
+  * @param data Data to use
+  * @return Index of furthest path point reached by a set of trajectories
+  */
++/**
++ * @brief rowwise().sum() of a column-major array expression, accumulated column by column,
++ * bit-identical to Eigen 3.4. Eigen sums a vectorizable expression in packets of rows as
++ * c0 + ((c1 + c2) + (c3 + c4)) + ... + remaining columns one by one, and the rows that do not
++ * fill a packet (and every row of a non-vectorizable expression) from left to right. The same
++ * order is used here, but whole columns are processed at once over contiguous memory.
++ */
++template<typename Derived>
++inline Eigen::ArrayXf rowwiseSumByColumns(const Eigen::ArrayBase<Derived> & e)
++{
++  using Redux = std::decay_t<decltype(e.derived().rowwise().sum())>;
++  constexpr bool vectorized =
++    (Eigen::internal::evaluator<Redux>::Flags & Eigen::PacketAccessBit) != 0;
++  const Eigen::Index rows = e.rows(), cols = e.cols();
++  Eigen::ArrayXf acc = e.col(0);
++  if constexpr (vectorized) {
++    constexpr Eigen::Index PS = Eigen::internal::unpacket_traits<
++      typename Eigen::internal::packet_traits<float>::type>::size;
++    const Eigen::Index main = rows - rows % PS;
++    const Eigen::Index size4 = (cols - 1) & ~Eigen::Index(3);
++    Eigen::Index i = 1;
++    for (; i < size4; i += 4) {
++      acc.head(main) = acc.head(main) + ((e.col(i).head(main) + e.col(i + 1).head(main)) +
++        (e.col(i + 2).head(main) + e.col(i + 3).head(main)));
++    }
++    for (; i < cols; ++i) {
++      acc.head(main) += e.col(i).head(main);
++    }
++    for (Eigen::Index r = main; r < rows; ++r) {
++      float sum = e(r, 0);
++      for (Eigen::Index j = 1; j < cols; ++j) {
++        sum += e(r, j);
++      }
++      acc(r) = sum;
++    }
++  } else {
++    // Not used for expressions with a multiply inside the sum: there the compiler may fuse
++    // multiply and add differently in Eigen's scalar loop and here (see PreferForwardCritic).
++    for (Eigen::Index j = 1; j < cols; ++j) {
++      acc += e.col(j);
++    }
++  }
++  return acc;
++}
++
++template<typename Derived>
++inline Eigen::ArrayXf rowwiseSum(const Eigen::ArrayBase<Derived> & e, bool fast)
++{
++  if (fast && e.cols() > 0) {
++    return rowwiseSumByColumns(e);
++  }
++  return e.rowwise().sum();
++}
++
++/// rowwise().mean() is sum() / cols in Eigen
++template<typename Derived>
++inline Eigen::ArrayXf rowwiseMean(const Eigen::ArrayBase<Derived> & e, bool fast)
++{
++  return rowwiseSum(e, fast) / static_cast<float>(e.cols());
++}
++
+ inline size_t findPathFurthestReachedPoint(const CriticData & data)
+ {
+   const int traj_cols = data.trajectories.x.cols();
+@@ -306,12 +368,12 @@ inline size_t findPathFurthestReachedPoint(const CriticData & data)
+   }
+ 
+   // Arc-length of all candidate trajectories
+-  const Eigen::ArrayXf traj_integrated_dists =
++  const Eigen::ArrayXf traj_integrated_dists = rowwiseSum(
+     ((data.trajectories.x.rightCols(traj_cols - 1) -
+     data.trajectories.x.leftCols(traj_cols - 1)).square() +
+     (data.trajectories.y.rightCols(traj_cols - 1) -
+     data.trajectories.y.leftCols(traj_cols - 1)).square())
+-    .sqrt().rowwise().sum();
++    .sqrt(), data.fast_reductions);
+ 
+   const auto & traj_x_end = data.trajectories.x.col(traj_cols - 1);
+   const auto & traj_y_end = data.trajectories.y.col(traj_cols - 1);
+@@ -325,6 +387,8 @@ inline size_t findPathFurthestReachedPoint(const CriticData & data)
+     max_reachable_idx = std::min(max_reachable_idx, n_cols - 1);
+ 
+     if (max_reachable_idx < 0) {continue;}
++    // the closest point lies in [0, max_reachable_idx]: it cannot raise max_idx
++    if (data.fast_reductions && max_reachable_idx <= max_idx) {continue;}
+ 
+     // Bounded Euclidean search: closest path point within [0..max_reachable_idx]
+     Eigen::Index eucl_idx;
+diff --git a/nav2_mppi_controller/src/critics/constraint_critic.cpp b/nav2_mppi_controller/src/critics/constraint_critic.cpp
+index b73fd3f..87c6b04 100644
+--- a/nav2_mppi_controller/src/critics/constraint_critic.cpp
++++ b/nav2_mppi_controller/src/critics/constraint_critic.cpp
+@@ -44,11 +44,13 @@ void ConstraintCritic::score(CriticData & data)
+   auto diff = dynamic_cast<DiffDriveMotionModel *>(data.motion_model.get());
+   if (diff != nullptr) {
+     if (power_ > 1u) {
+-      data.costs += (((((data.state.vx - vx_max_).max(0.0f) + (vx_min_ - data.state.vx).
+-        max(0.0f)) * data.model_dt).rowwise().sum().eval()) * weight_).pow(power_).eval();
++      data.costs += ((utils::rowwiseSum(((data.state.vx - vx_max_).max(0.0f) +
++        (vx_min_ - data.state.vx).max(0.0f)) * data.model_dt, data.fast_reductions)) *
++        weight_).pow(power_).eval();
+     } else {
+-      data.costs += (((((data.state.vx - vx_max_).max(0.0f) + (vx_min_ - data.state.vx).
+-        max(0.0f)) * data.model_dt).rowwise().sum().eval()) * weight_).eval();
++      data.costs += ((utils::rowwiseSum(((data.state.vx - vx_max_).max(0.0f) +
++        (vx_min_ - data.state.vx).max(0.0f)) * data.model_dt, data.fast_reductions)) *
++        weight_).eval();
+     }
+     return;
+   }
 diff --git a/nav2_mppi_controller/src/critics/cost_critic.cpp b/nav2_mppi_controller/src/critics/cost_critic.cpp
 index 9afb04c..6b41015 100644
 --- a/nav2_mppi_controller/src/critics/cost_critic.cpp
@@ -420,6 +585,56 @@ index 9afb04c..6b41015 100644
    }
  
    if (power_ > 1u) {
+diff --git a/nav2_mppi_controller/src/critics/goal_angle_critic.cpp b/nav2_mppi_controller/src/critics/goal_angle_critic.cpp
+index 204c494..e9cebbb 100644
+--- a/nav2_mppi_controller/src/critics/goal_angle_critic.cpp
++++ b/nav2_mppi_controller/src/critics/goal_angle_critic.cpp
+@@ -48,18 +48,20 @@ void GoalAngleCritic::score(CriticData & data)
+     auto symmetric_distances = utils::shortest_angular_distance(data.trajectories.yaws,
+       symmetric_goal_yaw).abs().eval();
+     if (power_ > 1u) {
+-      data.costs += (angular_distances.min(symmetric_distances).rowwise().mean() *
+-        weight_).pow(power_);
++      data.costs += (utils::rowwiseMean(angular_distances.min(symmetric_distances),
++        data.fast_reductions) * weight_).pow(power_);
+     } else {
+-      data.costs += angular_distances.min(symmetric_distances).rowwise().mean() * weight_;
++      data.costs += utils::rowwiseMean(angular_distances.min(symmetric_distances),
++        data.fast_reductions) * weight_;
+     }
+     return;
+   }
+ 
+   if (power_ > 1u) {
+-    data.costs += (angular_distances.rowwise().mean() * weight_).pow(power_);
++    data.costs += (utils::rowwiseMean(angular_distances, data.fast_reductions) *
++      weight_).pow(power_);
+   } else {
+-    data.costs += angular_distances.rowwise().mean() * weight_;
++    data.costs += utils::rowwiseMean(angular_distances, data.fast_reductions) * weight_;
+   }
+ }
+ 
+diff --git a/nav2_mppi_controller/src/critics/goal_critic.cpp b/nav2_mppi_controller/src/critics/goal_critic.cpp
+index 966d75d..ad5e306 100644
+--- a/nav2_mppi_controller/src/critics/goal_critic.cpp
++++ b/nav2_mppi_controller/src/critics/goal_critic.cpp
+@@ -47,11 +47,11 @@ void GoalCritic::score(CriticData & data)
+   const auto delta_y = data.trajectories.y - goal_y;
+ 
+   if (power_ > 1u) {
+-    data.costs += (((delta_x.square() + delta_y.square()).sqrt()).rowwise().mean() *
+-      weight_).pow(power_);
++    data.costs += (utils::rowwiseMean((delta_x.square() + delta_y.square()).sqrt(),
++      data.fast_reductions) * weight_).pow(power_);
+   } else {
+-    data.costs += (((delta_x.square() + delta_y.square()).sqrt()).rowwise().mean() *
+-      weight_).eval();
++    data.costs += (utils::rowwiseMean((delta_x.square() + delta_y.square()).sqrt(),
++      data.fast_reductions) * weight_).eval();
+   }
+ }
+ 
 diff --git a/nav2_mppi_controller/src/critics/path_align_critic.cpp b/nav2_mppi_controller/src/critics/path_align_critic.cpp
 index cfcb761..ab1e4e1 100644
 --- a/nav2_mppi_controller/src/critics/path_align_critic.cpp
@@ -509,10 +724,18 @@ index cfcb761..ab1e4e1 100644
      summed_path_dist = 0.0f;
      num_samples = 0u;
 diff --git a/nav2_mppi_controller/src/optimizer.cpp b/nav2_mppi_controller/src/optimizer.cpp
-index b2b18c0..54572f6 100644
+index b2b18c0..240cda3 100644
 --- a/nav2_mppi_controller/src/optimizer.cpp
 +++ b/nav2_mppi_controller/src/optimizer.cpp
-@@ -27,6 +27,7 @@
+@@ -16,6 +16,7 @@
+ #include "nav2_mppi_controller/optimizer.hpp"
+ 
+ #include <limits>
++#include <type_traits>
+ #include <memory>
+ #include <stdexcept>
+ #include <string>
+@@ -27,6 +28,7 @@
  #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
  #include "nav2_ros_common/node_utils.hpp"
  #include "nav2_ros_common/tf2_factories.hpp"
@@ -520,26 +743,150 @@ index b2b18c0..54572f6 100644
  
  namespace mppi
  {
-@@ -145,6 +146,7 @@ void Optimizer::getParams()
+@@ -145,6 +147,9 @@ void Optimizer::getParams()
    getParam(s.model_delay_vy, "model_delay_vy", 0.0f);
    getParam(s.model_delay_wz, "model_delay_wz", 0.0f);
    getParam(s.clamp_raw_controls, "clamp_raw_controls", false);
 +  getParam(fuse_generation_, "fuse_generation", false);
++  getParam(fuse_generation_registers_, "fuse_generation_registers", false);
++  getParam(fast_reductions_, "fast_reductions", false);
    getParam(s.time_steps, "time_steps", 56);
    getParam(s.batch_size, "batch_size", 1000);
    getParam(s.iteration_count, "iteration_count", 1);
-@@ -411,10 +413,47 @@ void Optimizer::generateNoisedTrajectories()
+@@ -388,6 +393,7 @@ void Optimizer::prepare(
+   critics_data_.fail_flag = false;
+   critics_data_.goal_checker = goal_checker;
+   critics_data_.motion_model = motion_model_;
++  critics_data_.fast_reductions = fast_reductions_;
+   critics_data_.furthest_reached_path_point.reset();
+   critics_data_.path_pts_valid.reset();
+ }
+@@ -411,10 +417,161 @@ void Optimizer::generateNoisedTrajectories()
    applyControlSequenceInterIterationConstraints();
    noise_generator_.setNoisedControls(state_, control_sequence_);
    noise_generator_.generateNextNoises();
 +  if (fuse_generation_ && !isHolonomic() && motion_model_->hasNoModelDelay()) {
-+    generateFused();
++    constexpr Eigen::Index kPacket = Eigen::internal::unpacket_traits<
++      Eigen::internal::packet_traits<float>::type>::size;
++    if (fuse_generation_registers_ && generated_trajectories_.yaws.rows() % kPacket == 0) {
++      generateFusedPackets();
++    } else {
++      generateFused();
++    }
 +    return;
 +  }
    updateStateVelocities(state_);
    integrateStateVelocities(generated_trajectories_, state_);
  }
  
++void Optimizer::addControlCost(
++  const Eigen::ArrayXXf & u, const Eigen::ArrayXf & mean, float gamma)
++{
++  const Eigen::Index n_cols = u.cols();
++  if (n_cols == 0) {
++    return;
++  }
++  cc_acc_ = (u.col(0) - mean(0)) * mean(0);
++  for (Eigen::Index j = 1; j < n_cols; ++j) {
++    cc_acc_ += (u.col(j) - mean(j)) * mean(j);
++  }
++  costs_ += (gamma * cc_acc_).eval();
++}
++
++void Optimizer::generateFusedPackets()
++{
++  using namespace Eigen::internal;  // NOLINT
++  typedef packet_traits<float>::type Packet;
++  constexpr Eigen::Index PS = unpacket_traits<Packet>::size;
++
++  updateInitialStateVelocities(state_);
++  auto & tr = generated_trajectories_;
++  const Eigen::Index rows = tr.yaws.rows();
++  const Eigen::Index n_cols = tr.yaws.cols();
++  if (n_cols == 0) {
++    return;
++  }
++  float max_dvx, min_dvx, max_dwz;
++  bool clamp;
++  motion_model_->stepLimits(max_dvx, min_dvx, max_dwz, clamp);
++  const Packet p_dt = pset1<Packet>(settings_.model_dt);
++  const Packet p_max_dvx = pset1<Packet>(max_dvx);
++  const Packet p_min_dvx = pset1<Packet>(min_dvx);
++  const Packet p_max_dwz = pset1<Packet>(max_dwz);
++  const Packet p_zero = pzero(p_dt);
++  const auto initial_yaw = static_cast<float>(tf2::getYaw(state_.pose.pose.orientation));
++  const Packet p_cos0 = pset1<Packet>(cosf(initial_yaw));
++  const Packet p_sin0 = pset1<Packet>(sinf(initial_yaw));
++  const Packet p_yaw0 = pset1<Packet>(initial_yaw);
++  const Packet p_x0 = pset1<Packet>(static_cast<float>(state_.pose.pose.position.x));
++  const Packet p_y0 = pset1<Packet>(static_cast<float>(state_.pose.pose.position.y));
++
++  float * vx = state_.vx.data();
++  float * wz = state_.wz.data();
++  float * cvx = state_.cvx.data();
++  float * cwz = state_.cwz.data();
++  float * ox = tr.x.data();
++  float * oy = tr.y.data();
++  float * oyaw = tr.yaws.data();
++
++  // K packets of trajectories go through the time steps together, so the dependent chain
++  // of one packet (velocity limits -> sin/cos -> pose) is overlapped with the others
++  auto run_block = [&](Eigen::Index r0, auto k_const) {
++      constexpr int K = decltype(k_const)::value;
++      Packet v[K], w[K], yaw[K], x[K], y[K], c[K], s[K];
++      for (int k = 0; k < K; ++k) {
++        v[k] = ploadu<Packet>(vx + r0 + k * PS);  // column 0: the current speed
++        w[k] = ploadu<Packet>(wz + r0 + k * PS);
++        yaw[k] = p_yaw0;
++        x[k] = p_x0;
++        y[k] = p_y0;
++        c[k] = p_cos0;
++        s[k] = p_sin0;
++      }
++      for (Eigen::Index i = 0; i < n_cols; ++i) {
++        for (int k = 0; k < K; ++k) {
++          const Eigen::Index o = i * rows + r0 + k * PS;
++          if (i > 0) {
++            // predictColumn(): limits around the previous velocity, then clamp the raw control
++            const Eigen::Index op = o - rows;
++            const Packet pos = pcmp_lt(p_zero, v[k]);
++            const Packet lower = pselect(pos, padd(v[k], p_min_dvx), psub(v[k], p_max_dvx));
++            const Packet upper = pselect(pos, padd(v[k], p_max_dvx), psub(v[k], p_min_dvx));
++            const Packet nv = pmin(pmax(ploadu<Packet>(cvx + op), lower), upper);
++            const Packet nw = pmin(pmax(ploadu<Packet>(cwz + op), psub(w[k], p_max_dwz)),
++              padd(w[k], p_max_dwz));
++            if (clamp) {
++              pstoreu(cvx + op, nv);
++              pstoreu(cwz + op, nw);
++            }
++            v[k] = nv;
++            w[k] = nw;
++            pstoreu(vx + o, nv);
++            pstoreu(wz + o, nw);
++            // heading at the start of step i
++            utils::psincosBoth(yaw[k], s[k], c[k]);
++          }
++          yaw[k] = padd(yaw[k], pmul(w[k], p_dt));
++          pstoreu(oyaw + o, yaw[k]);
++          const Packet dx = pmul(v[k], c[k]);
++          const Packet dy = pmul(v[k], s[k]);
++          x[k] = padd(x[k], pmul(dx, p_dt));
++          y[k] = padd(y[k], pmul(dy, p_dt));
++          pstoreu(ox + o, x[k]);
++          pstoreu(oy + o, y[k]);
++        }
++      }
++    };
++  constexpr int kBlock = 4;
++  Eigen::Index r = 0;
++  for (; r + kBlock * PS <= rows; r += kBlock * PS) {
++    run_block(r, std::integral_constant<int, kBlock>{});
++  }
++  for (; r < rows; r += PS) {
++    run_block(r, std::integral_constant<int, 1>{});
++  }
++}
++
 +void Optimizer::generateFused()
 +{
 +  updateInitialStateVelocities(state_);
@@ -576,7 +923,43 @@ index b2b18c0..54572f6 100644
  void Optimizer::applyControlSequenceInterIterationConstraints()
  {
    // Enforce t=0 to be dynamically feasible from the current speed for inter-iteration feasibility
-@@ -678,7 +717,8 @@ void Optimizer::updateControlSequence()
+@@ -657,16 +814,25 @@ void Optimizer::updateControlSequence()
+   const bool is_holo = isHolonomic();
+   auto & s = settings_;
+ 
+-  auto vx_T = control_sequence_.vx.transpose();
+-  auto bounded_noises_vx = state_.cvx.rowwise() - vx_T;
+-  const float gamma_vx = s.gamma / (s.sampling_std.vx * s.sampling_std.vx);
+-  costs_ += (gamma_vx * (bounded_noises_vx.rowwise() * vx_T).rowwise().sum()).eval();
+-
+-  if (s.sampling_std.wz > 0.0f) {
+-    auto wz_T = control_sequence_.wz.transpose();
+-    auto bounded_noises_wz = state_.cwz.rowwise() - wz_T;
+-    const float gamma_wz = s.gamma / (s.sampling_std.wz * s.sampling_std.wz);
+-    costs_ += (gamma_wz * (bounded_noises_wz.rowwise() * wz_T).rowwise().sum()).eval();
++  if (fast_reductions_) {
++    addControlCost(state_.cvx, control_sequence_.vx,
++      s.gamma / (s.sampling_std.vx * s.sampling_std.vx));
++    if (s.sampling_std.wz > 0.0f) {
++      addControlCost(state_.cwz, control_sequence_.wz,
++        s.gamma / (s.sampling_std.wz * s.sampling_std.wz));
++    }
++  } else {
++    auto vx_T = control_sequence_.vx.transpose();
++    auto bounded_noises_vx = state_.cvx.rowwise() - vx_T;
++    const float gamma_vx = s.gamma / (s.sampling_std.vx * s.sampling_std.vx);
++    costs_ += (gamma_vx * (bounded_noises_vx.rowwise() * vx_T).rowwise().sum()).eval();
++
++    if (s.sampling_std.wz > 0.0f) {
++      auto wz_T = control_sequence_.wz.transpose();
++      auto bounded_noises_wz = state_.cwz.rowwise() - wz_T;
++      const float gamma_wz = s.gamma / (s.sampling_std.wz * s.sampling_std.wz);
++      costs_ += (gamma_wz * (bounded_noises_wz.rowwise() * wz_T).rowwise().sum()).eval();
++    }
+   }
+ 
+   if (is_holo) {
+@@ -678,7 +844,8 @@ void Optimizer::updateControlSequence()
  
    auto costs_normalized = costs_ - costs_.minCoeff();
    const float inv_temp = 1.0f / s.temperature;

@@ -16,6 +16,7 @@
 // for the stock path and for fuse_generation.
 
 #include <cstdio>
+#include <cstdlib>
 
 #include <chrono>
 #include <memory>
@@ -35,18 +36,29 @@
 namespace
 {
 
-constexpr double kRes = 0.1, kRobotX = 12.0, kRobotY = 15.0;
+constexpr double kRobotX = 12.0, kRobotY = 15.0;
+// Robot and map, FP=big (default) or FP=amr in the environment
+double kRes = 0.1, kInflation = 5.0, kWall = 1.7, kCorridor = 3.0;
+const char * kFootprint = "[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]";
+void selectRobot()
+{
+  const char * fp = std::getenv("FP");
+  if (fp && std::string(fp) == "amr") {  // 0.7 x 0.5 m AMR, 5 cm map, 2.4 m aisle
+    kFootprint = "[[0.35,0.25],[-0.35,0.25],[-0.35,-0.25],[0.35,-0.25]]";
+    kRes = 0.05; kInflation = 1.5; kWall = 0.6; kCorridor = 1.2;
+  }
+}
 
 std::shared_ptr<nav2_costmap_2d::Costmap2DROS> makeCostmapRos()
 {
   rclcpp::NodeOptions options;
   options.parameter_overrides({
     {"width", 30}, {"height", 30}, {"resolution", kRes},
-    {"footprint", "[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]"},
+    {"footprint", kFootprint},
     {"footprint_padding", 0.1},
     {"plugins", std::vector<std::string>{"inflation_layer"}},
     {"inflation_layer.plugin", "nav2_costmap_2d::InflationLayer"},
-    {"inflation_layer.inflation_radius", 5.0},
+    {"inflation_layer.inflation_radius", kInflation},
     {"inflation_layer.cost_scaling_factor", 0.7},
   });
   auto ros = std::make_shared<nav2_costmap_2d::Costmap2DROS>(options);
@@ -71,11 +83,11 @@ void fillScene(std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros, int scene)
       }
     };
   if (scene == 0) {
-    rect(8.0, kRobotY + 3.0, 28.0, kRobotY + 3.0);
-    rect(8.0, kRobotY - 3.0, 28.0, kRobotY - 3.0);
-    rect(19.0, kRobotY + 0.9, 19.6, kRobotY + 3.0);
+    rect(8.0, kRobotY + kCorridor, 28.0, kRobotY + kCorridor);
+    rect(8.0, kRobotY - kCorridor, 28.0, kRobotY - kCorridor);
+    rect(19.0, kRobotY + 0.3 * kCorridor, 19.6, kRobotY + kCorridor);
   } else {
-    rect(8.0, kRobotY + 1.7, 28.0, kRobotY + 1.7);
+    rect(8.0, kRobotY + kWall, 28.0, kRobotY + kWall);
   }
   const int rc = static_cast<int>(infl->getInflationRadius() / kRes);
   const int sx = cm->getSizeInCellsX(), sy = cm->getSizeInCellsY();
@@ -129,6 +141,38 @@ public:
         std::chrono::duration<double, std::micro>(g - f).count()};
       for (int k = 0; k < 6; ++k) {t[k] += us[k];}
     }
+    // pieces of updateControlSequence, same expressions on the same arrays
+    double q[5] = {0, 0, 0, 0, 0};
+    for (int r = 0; r < reps; ++r) {
+      auto & st = settings_;
+      auto a = clk::now();
+      auto vx_T = control_sequence_.vx.transpose();
+      auto bvx = state_.cvx.rowwise() - vx_T;
+      const float gvx = st.gamma / (st.sampling_std.vx * st.sampling_std.vx);
+      Eigen::ArrayXf cc = (gvx * (bvx.rowwise() * vx_T).rowwise().sum()).eval();
+      auto wz_T = control_sequence_.wz.transpose();
+      auto bwz = state_.cwz.rowwise() - wz_T;
+      const float gwz = st.gamma / (st.sampling_std.wz * st.sampling_std.wz);
+      cc += (gwz * (bwz.rowwise() * wz_T).rowwise().sum()).eval();
+      auto b = clk::now();
+      auto cn = cc - cc.minCoeff();
+      auto sm = ((-(1.0f / st.temperature) * cn).cwiseMax(-80.0f)).exp().eval();
+      sm /= sm.sum();
+      auto c = clk::now();
+      Eigen::VectorXf v1 = state_.cvx.transpose().matrix() * sm.matrix();
+      Eigen::VectorXf v2 = state_.cwz.transpose().matrix() * sm.matrix();
+      auto d = clk::now();
+      auto e = clk::now();
+      updateControlSequence();
+      auto f = clk::now();
+      sink_ += v1.sum() + v2.sum() + cc.sum();
+      q[0] += std::chrono::duration<double, std::micro>(b - a).count();
+      q[1] += std::chrono::duration<double, std::micro>(c - b).count();
+      q[2] += std::chrono::duration<double, std::micro>(d - c).count();
+      q[4] += std::chrono::duration<double, std::micro>(f - e).count();
+    }
+    std::printf("update: control cost %.1f us | softmax %.1f | weighted sum (2 GEMV) %.1f | "
+      "whole updateControlSequence %.1f\n", q[0] / reps, q[1] / reps, q[2] / reps, q[4] / reps);
     std::printf("fuse=%d  inter-iteration constraints %.1f us | setNoisedControls %.1f | "
       "generateNextNoises %.1f | %s %.1f | integrate %.1f | (cos+sin of all yaws alone %.1f)\n",
       fuse, t[0] / reps, t[1] / reps, t[2] / reps, fuse ? "fused predict+integrate" : "predict",
@@ -140,6 +184,7 @@ public:
 
 int main()
 {
+  selectRobot();
   rclcpp::init(0, nullptr);
   for (int fuse : {0, 1}) {
     auto costmap_ros = makeCostmapRos();
