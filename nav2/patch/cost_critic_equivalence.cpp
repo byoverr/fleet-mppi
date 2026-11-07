@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <random>
@@ -144,7 +145,7 @@ void fillTrajectories(mppi::models::Trajectories & t, int batch, int steps, std:
 }
 
 std::unique_ptr<mppi::critics::CostCritic> makeCritic(
-  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros, bool bitmask, int id,
+  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros, bool bitmask, bool fast_reads, int id,
   std::shared_ptr<nav2::LifecycleNode> & node, std::unique_ptr<mppi::ParametersHandler> & ph)
 {
   rclcpp::NodeOptions options;
@@ -155,6 +156,7 @@ std::unique_ptr<mppi::critics::CostCritic> makeCritic(
     {"CostCritic.inflation_layer_name", "inflation_layer"},
     {"CostCritic.num_threads", 1},
     {"CostCritic.use_footprint_bitmask", bitmask},
+    {"CostCritic.fast_cost_reads", fast_reads},
   });
   node = std::make_shared<nav2::LifecycleNode>("eq_" + std::to_string(id), options);
   std::string name = "mppi";
@@ -186,8 +188,10 @@ int main(int argc, char ** argv)
     auto ros = makeCostmap(c, id++);
     std::shared_ptr<nav2::LifecycleNode> na, nb;
     std::unique_ptr<mppi::ParametersHandler> pa, pb;
-    auto plain = makeCritic(ros, false, id++, na, pa);
-    auto masked = makeCritic(ros, true, id++, nb, pb);
+    // default: exact footprint check vs masks; CC_EQ_FAST=1: masks vs masks + fast_cost_reads
+    const bool fast_mode = std::getenv("CC_EQ_FAST") != nullptr;
+    auto plain = makeCritic(ros, fast_mode, false, id++, na, pa);
+    auto masked = makeCritic(ros, true, fast_mode, id++, nb, pb);
     std::mt19937 rng(7 + id);
     for (int trial = 0; trial < kTrials; ++trial) {
       fillRandom(ros, rng);

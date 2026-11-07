@@ -1,0 +1,6 @@
+amr wall=0.0 main: 64.6 64.7 64.4 | ours: 90.6 91.2 90.6
+amr wall=0.5 main: 42.5 42.5 42.5 | ours: 84.4 87.0 86.4
+amr wall=1.0 main: 32.0 32.2 32.1 | ours: 83.9 82.0 84.6
+big wall=0.0 main: 64.6 64.8 62.3 | ours: 92.6 92.1 91.3
+big wall=0.5 main: 6.5 6.5 6.5 | ours: 65.3 72.1 72.1
+big wall=1.0 main: 3.4 3.4 3.4 | ours: 54.7 59.9 59.6
