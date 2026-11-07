@@ -1,0 +1,2 @@
+fuse=0  inter-iteration constraints 0.0 us | setNoisedControls 25.9 | generateNextNoises 0.0 | predict 99.4 | integrate 248.3 | (cos+sin of all yaws alone 150.6)
+fuse=1  inter-iteration constraints 0.1 us | setNoisedControls 26.1 | generateNextNoises 0.0 | fused predict+integrate 265.8 | integrate 0.0 | (cos+sin of all yaws alone 166.7)

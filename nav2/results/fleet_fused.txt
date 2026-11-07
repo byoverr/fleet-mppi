@@ -1,0 +1,6 @@
+robots=1 workers=1 bitmask=1 cc_threads=1 wall_share=0.50 batch=2000 fuse=0 cycles/s=953.0 robots@20Hz=47.6 p50_ms=1.05 p99_ms=1.09 max_ms=1.45 cpu_ms_per_cycle=1.05 cpu_cores_busy=1.00
+robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=0.50 batch=2000 fuse=0 cycles/s=1056.9 robots@20Hz=52.8 p50_ms=0.94 p99_ms=1.14 max_ms=1.48 cpu_ms_per_cycle=0.95 cpu_cores_busy=1.00
+robots=32 workers=4 bitmask=1 cc_threads=1 wall_share=0.50 batch=2000 fuse=0 cycles/s=3244.0 robots@20Hz=162.2 p50_ms=1.22 p99_ms=1.64 max_ms=4.78 cpu_ms_per_cycle=1.23 cpu_cores_busy=4.00
+robots=1 workers=1 bitmask=1 cc_threads=1 wall_share=0.50 batch=2000 fuse=1 cycles/s=1000.9 robots@20Hz=50.0 p50_ms=0.99 p99_ms=1.07 max_ms=4.37 cpu_ms_per_cycle=1.00 cpu_cores_busy=1.00
+robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=0.50 batch=2000 fuse=1 cycles/s=1129.1 robots@20Hz=56.5 p50_ms=0.88 p99_ms=1.08 max_ms=2.72 cpu_ms_per_cycle=0.89 cpu_cores_busy=1.00
+robots=32 workers=4 bitmask=1 cc_threads=1 wall_share=0.50 batch=2000 fuse=1 cycles/s=3493.2 robots@20Hz=174.7 p50_ms=1.14 p99_ms=1.51 max_ms=3.20 cpu_ms_per_cycle=1.14 cpu_cores_busy=4.00

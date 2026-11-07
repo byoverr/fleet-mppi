@@ -1,0 +1,4 @@
+BM_FullCycle/threads:1/scene:0/bitmask:1/critics:1/fuse:0/min_time:2.000/process_time/real_time_median      0.830 ms        0.830 ms            5 critics_ms=0.322157 gen_ms=0.343145 update_ms=0.0968066
+BM_FullCycle/threads:1/scene:1/bitmask:1/critics:1/fuse:0/min_time:2.000/process_time/real_time_median       1.08 ms         1.08 ms            5 critics_ms=0.576724 gen_ms=0.336078 update_ms=0.0956025
+BM_FullCycle/threads:1/scene:0/bitmask:1/critics:1/fuse:1/min_time:2.000/process_time/real_time_median      0.732 ms        0.732 ms            5 critics_ms=0.312994 gen_ms=0.257486 update_ms=0.0962928
+BM_FullCycle/threads:1/scene:1/bitmask:1/critics:1/fuse:1/min_time:2.000/process_time/real_time_median      0.990 ms        0.990 ms            5 critics_ms=0.577013 gen_ms=0.256028 update_ms=0.096259

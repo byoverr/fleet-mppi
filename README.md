@@ -6,7 +6,7 @@
 ## Что где
 
 - `SUMMARY.md`, `VERIFICATION.md`: общие выводы и проверка первого раунда.
-- `nav2/`: битовые маски в CostCritic. Итоги в `nav2/RESULTS.md`, код в `nav2/patch/`, замеры в `nav2/results/`.
+- `nav2/`: битовые маски в CostCritic и слитая генерация траекторий (`fuse_generation`). Итоги в `nav2/RESULTS.md` (раздел 12 — потолок для В1), код в `nav2/patch/`, замеры в `nav2/results/`.
 - `nav2/workspace_snapshot/`: рабочая копия Nav2 из контейнера `nav2lab`, база: коммит из `nav2_commit.txt`.
 - `nav2/trajectory_buffer/`: буфер траектории на роботе (пакет ROS 2).
 - `expW/`: модель сети и частоты сервера. Итоги в `expW/RESULTS.md`; адаптивная частота сервера (вариант В2) в `expW/RESULTS_ADAPT.md`; неточный привод и его идентификация (В3, Г8) в `expW/RESULTS_MISMATCH.md`.
