@@ -182,6 +182,9 @@ double run(int scene, int st, int which, int cycles)
   params.emplace_back("dummy.fuse_generation", true);
   params.emplace_back("dummy.PathAlignCritic.blocked_evaluation", std::getenv("PA_BLOCKED") != nullptr);
   params.emplace_back("dummy.fast_reductions", std::getenv("FAST") != nullptr);
+  params.emplace_back("dummy.CostCritic.fast_cost_reads", std::getenv("CCR") != nullptr);
+  params.emplace_back("dummy.PathAlignCritic.packet_evaluation", std::getenv("FAST") != nullptr);
+  params.emplace_back("dummy.fuse_generation_registers", std::getenv("FAST") != nullptr);
   rclcpp::NodeOptions options;
   options.parameter_overrides(params);
   auto node = getDummyNode(options);

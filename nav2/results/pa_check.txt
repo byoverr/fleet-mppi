@@ -1,0 +1,9 @@
+[100%] Built target fleet_server_benchmark
+amr wall=0.0 PathAlign packet=off cpu_ms: 0.64 0.65 0.65 0.64 0.66
+amr wall=0.0 PathAlign packet=on cpu_ms: 0.59 0.59 0.60 0.60 0.60
+amr wall=1.0 PathAlign packet=off cpu_ms: 0.69 0.70 0.70 0.69 0.70
+amr wall=1.0 PathAlign packet=on cpu_ms: 0.64 0.64 0.65 0.65 0.66
+big wall=0.0 PathAlign packet=off cpu_ms: 0.63 0.64 0.63 0.63 0.64
+big wall=0.0 PathAlign packet=on cpu_ms: 0.58 0.58 0.58 0.58 0.58
+big wall=1.0 PathAlign packet=off cpu_ms: 0.90 0.89 0.89 0.89 0.89
+big wall=1.0 PathAlign packet=on cpu_ms: 0.84 0.84 0.84 0.84 0.91
