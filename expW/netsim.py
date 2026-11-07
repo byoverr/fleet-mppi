@@ -86,6 +86,18 @@ class NetConfig:
     drain: float = 4.0  # s after the server is done, wait for the robot to stop
     server_every: int = 1  # the server plans on every n-th 10 Hz tick (10 / n Hz)
     shift_aligned: bool = False  # warm start shifted by the real time between plans
+    # Adaptive server rate (overrides server_every). On a tick with fresh state the server
+    # replans only if one of the cheap checks fires, otherwise the robot keeps its buffer:
+    #   * `adapt_max_every` ticks passed since the last plan;
+    #   * the reported pose is more than `adapt_dev` m away from where the last plan put it;
+    #   * the rest of the buffer, rolled out from the reported pose for `adapt_look` s on the
+    #     server costmap, comes closer than `adapt_near` m (beyond the radius) to an obstacle;
+    #   * the buffer is about to run out or is a stop/backup command.
+    adaptive: bool = False
+    adapt_max_every: int = 4
+    adapt_near: float = 0.25
+    adapt_look: float = 1.0
+    adapt_dev: float = 0.05
 
 
 class Channel:
@@ -220,6 +232,42 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
         seq_no += 1
         heapq.heappush(q, (arrival_step, seq_no, msg))
 
+    srv_tick_i = 0
+    srv_plan = None  # (stamp, pose, seq, regular MPPI plan?, server tick) of the last plan sent
+    why = dict(first=0, period=0, dev=0, near=0, short=0, other=0, skip=0)
+    check_ms = []
+    n_look = max(int(round(net.adapt_look / dt)), 1)
+
+    def need_plan() -> bool:
+        """Cheap server-side check: does this robot need a new MPPI plan on this tick?"""
+        t0 = time.perf_counter()
+        r = _need_plan()
+        check_ms.append(1000 * (time.perf_counter() - t0))
+        why[r] += 1
+        return r != "skip"
+
+    def _need_plan() -> str:
+        if srv_plan is None:
+            return "first"
+        p_stamp, p_pose, p_seq, regular, p_tick = srv_plan
+        if srv_status is not None or not regular:
+            return "other"  # done, or the last command was a stop / backup / constant one
+        if srv_tick_i - p_tick >= net.adapt_max_every:
+            return "period"
+        stamp, pose, _ = srv_latest_state
+        k = int(math.floor((stamp - p_stamp) / dt + EPS))
+        if k + n_look > len(p_seq):
+            return "short"
+        if k > 0:
+            pred = rollout_unicycle(p_pose, p_seq[None, :k, 0], p_seq[None, :k, 1], dt)[0, -1]
+            if math.hypot(pred[0] - pose[0], pred[1] - pose[1]) > net.adapt_dev:
+                return "dev"
+        u = np.repeat(p_seq[k:k + n_look], 2, axis=0)  # 50 ms steps
+        tr = rollout_unicycle(pose, u[None, :, 0], u[None, :, 1], dt / 2)[0]
+        if cm_srv.clearance_at(tr[:, :2]).min() - robot.radius < net.adapt_near:
+            return "near"
+        return "skip"
+
     while step_i < max_steps:
         t = step_i * SUB
         tick = step_i % ticks_per_srv == 0
@@ -250,7 +298,11 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
                     srv_latest_state = (m["stamp"], m["pose"], m["vel"])
                     srv_new_state = True
                 acked_ver = max(acked_ver, m["ack"])
-            srv_turn = (step_i // ticks_per_srv) % net.server_every == 0
+            if net.adaptive:
+                srv_turn = srv_new_state and need_plan()
+            else:
+                srv_turn = (step_i // ticks_per_srv) % net.server_every == 0
+            srv_tick_i += 1
             if srv_new_state and srv_turn:
                 srv_new_state = False
                 if net.shift_aligned and net.server_every > 1 and T_mppi is not None:
@@ -297,6 +349,8 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
                     msg["path"] = nav.lp.path.copy()
                     nb += 8 * len(nav.lp.path) // 4  # path decimated to 20 cm when sent
                 send(down_q, step_i + d_steps, msg, nb, up=False)
+                regular = from_lp and T_mppi is not None and nav.last_local.status == "ok"
+                srv_plan = (stamp, pose, seq, regular, srv_tick_i)
 
         # ---------------- robot: receive commands
         got = False
@@ -459,5 +513,10 @@ def run_net_episode(cfg: EpisodeConfig, net: NetConfig) -> dict:
         srv_calls=int(st.local_calls),
         server_every=net.server_every,
         shift_aligned=bool(net.shift_aligned),
+        adaptive=bool(net.adaptive),
+        adapt=dict(max_every=net.adapt_max_every, near=net.adapt_near, look=net.adapt_look,
+                   dev=net.adapt_dev) if net.adaptive else None,
+        why=why if net.adaptive else None,
+        check_ms=round(float(np.mean(check_ms)), 4) if check_ms else 0.0,
         wall=round(time.perf_counter() - wall0, 2),
     )
