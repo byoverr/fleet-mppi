@@ -42,18 +42,29 @@
 namespace
 {
 
-constexpr double kRes = 0.1, kRobotX = 12.0, kRobotY = 15.0;
+constexpr double kRobotX = 12.0, kRobotY = 15.0;
+// Robot and map, FP=big (default) or FP=amr in the environment
+double kRes = 0.1, kInflation = 5.0, kWall = 1.7, kCorridor = 3.0;
+const char * kFootprint = "[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]";
+void selectRobot()
+{
+  const char * fp = std::getenv("FP");
+  if (fp && std::string(fp) == "amr") {  // 0.7 x 0.5 m AMR, 5 cm map, 2.4 m aisle
+    kFootprint = "[[0.35,0.25],[-0.35,0.25],[-0.35,-0.25],[0.35,-0.25]]";
+    kRes = 0.05; kInflation = 1.5; kWall = 0.6; kCorridor = 1.2;
+  }
+}
 
 std::shared_ptr<nav2_costmap_2d::Costmap2DROS> makeCostmapRos()
 {
   rclcpp::NodeOptions options;
   options.parameter_overrides({
     {"width", 30}, {"height", 30}, {"resolution", kRes},
-    {"footprint", "[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]"},
+    {"footprint", kFootprint},
     {"footprint_padding", 0.1},
     {"plugins", std::vector<std::string>{"inflation_layer"}},
     {"inflation_layer.plugin", "nav2_costmap_2d::InflationLayer"},
-    {"inflation_layer.inflation_radius", 5.0},
+    {"inflation_layer.inflation_radius", kInflation},
     {"inflation_layer.cost_scaling_factor", 0.7},
   });
   auto ros = std::make_shared<nav2_costmap_2d::Costmap2DROS>(options);
@@ -78,11 +89,11 @@ void fillScene(std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros, int scene)
       }
     };
   if (scene == 0) {
-    rect(8.0, kRobotY + 3.0, 28.0, kRobotY + 3.0);
-    rect(8.0, kRobotY - 3.0, 28.0, kRobotY - 3.0);
-    rect(19.0, kRobotY + 0.9, 19.6, kRobotY + 3.0);
+    rect(8.0, kRobotY + kCorridor, 28.0, kRobotY + kCorridor);
+    rect(8.0, kRobotY - kCorridor, 28.0, kRobotY - kCorridor);
+    rect(19.0, kRobotY + 0.3 * kCorridor, 19.6, kRobotY + kCorridor);
   } else {
-    rect(8.0, kRobotY + 1.7, 28.0, kRobotY + 1.7);
+    rect(8.0, kRobotY + kWall, 28.0, kRobotY + kWall);
   }
   const int rc = static_cast<int>(infl->getInflationRadius() / kRes);
   const int sx = cm->getSizeInCellsX(), sy = cm->getSizeInCellsY();
@@ -162,6 +173,7 @@ int main(int argc, char ** argv)
 {
   if (argc < 2) {std::fprintf(stderr, "usage: critic_equivalence <Critic.param> [value for the second optimizer]\n"); return 2;}
   const std::string toggle = std::string("dummy.") + argv[1];
+  selectRobot();
   rclcpp::init(0, nullptr);
   size_t total = 0, points = 0, active_cycles = 0;
   for (int scene : {0, 1}) {
@@ -207,14 +219,14 @@ int main(int argc, char ** argv)
           size_t d = 0;
           int ok = 0;
           for (int c = 0; c < 80; ++c) {
-            TestPose p{kRobotX + 0.02 * c, kRobotY + 0.02 * std::sin(0.4 * c)};
+            TestPose p{kRobotX + 0.004 * c, kRobotY + 0.004 * std::sin(0.4 * c)};
             auto pose = getDummyPointStamped(nodes[0], p);
-            const double yaw = (st == 1 ? -0.8 : 0.0) + 0.1 * std::sin(0.3 * c);
+            const double yaw = (st == 1 ? -0.8 : 0.0) + 0.02 * std::sin(0.3 * c);
             pose.pose.orientation.z = std::sin(yaw / 2);
             pose.pose.orientation.w = std::cos(yaw / 2);
             geometry_msgs::msg::Twist vel;
-            vel.linear.x = st == 3 ? 0.3 : 1.2 + 0.01 * c;
-            vel.angular.z = 0.2 * std::sin(0.5 * c);
+            vel.linear.x = st == 3 ? 0.3 : 1.0 + 0.002 * c;
+            vel.angular.z = 0.05 * std::sin(0.5 * c);
             geometry_msgs::msg::TwistStamped cmd[2];
             bool fail[2] = {false, false};
             for (int f = 0; f < 2; ++f) {
