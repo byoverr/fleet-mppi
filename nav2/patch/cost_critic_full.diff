@@ -1,5 +1,5 @@
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp
-index c285a14..7461039 100644
+index c285a14..288d680 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp
 +++ b/nav2_mppi_controller/include/nav2_mppi_controller/critics/cost_critic.hpp
 @@ -16,14 +16,20 @@
@@ -75,7 +75,7 @@ index c285a14..7461039 100644
    /**
      * @brief An implementation of worldToMap fully using floats
      * @param wx Float world X coord
-@@ -143,6 +174,13 @@ protected:
+@@ -143,6 +174,15 @@ protected:
    float near_goal_distance_;
    std::string inflation_layer_name_;
  
@@ -83,6 +83,8 @@ index c285a14..7461039 100644
 +  bool use_bitmask_{true};
 +  bool fast_cost_reads_{false};  // lab: read all pose costs first, column by column
 +  std::vector<uint8_t> pose_cost_buf_;
++  std::vector<unsigned int> pose_cell_buf_;
++  std::vector<uint8_t> pose_ok_buf_;
 +  int bitmask_heading_bins_{128};
 +  int bitmask_subcell_bins_{2};
 +  mppi::FootprintBitmask fp_bitmask_;
@@ -90,7 +92,7 @@ index c285a14..7461039 100644
  };
  
 diff --git a/nav2_mppi_controller/src/critics/cost_critic.cpp b/nav2_mppi_controller/src/critics/cost_critic.cpp
-index 9afb04c..3457de0 100644
+index 9afb04c..a074e17 100644
 --- a/nav2_mppi_controller/src/critics/cost_critic.cpp
 +++ b/nav2_mppi_controller/src/critics/cost_critic.cpp
 @@ -13,7 +13,10 @@
@@ -174,7 +176,7 @@ index 9afb04c..3457de0 100644
  
    auto & collisions = data.trajectories_in_collision;
    const bool track_collisions = !collisions.empty();
-@@ -178,46 +218,104 @@ void CostCritic::score(CriticData & data)
+@@ -178,46 +218,119 @@ void CostCritic::score(CriticData & data)
      data.trajectories.yaws.data(), strided_traj_rows, strided_traj_cols,
      Eigen::Stride<-1, -1>(outer_stride, 1));
  
@@ -204,13 +206,28 @@ index 9afb04c..3457de0 100644
 +    const unsigned char * map = costmap->getCharMap();
 +    const size_t R = static_cast<size_t>(strided_traj_rows);
 +    pose_cost_buf_.resize(R * static_cast<size_t>(strided_traj_cols));
++    pose_cell_buf_.resize(R);
++    pose_ok_buf_.resize(R);
++    const float ox = origin_x_, oy = origin_y_, res = resolution_;
++    const unsigned int sx = size_x_, sy = size_y_;
 +    for (int j = 0; j < strided_traj_cols; ++j) {
 +      const float * xs = data.trajectories.x.data() + static_cast<size_t>(j) * outer_stride;
 +      const float * ys = data.trajectories.y.data() + static_cast<size_t>(j) * outer_stride;
 +      uint8_t * out = pose_cost_buf_.data() + static_cast<size_t>(j) * R;
++      unsigned int * cell = pose_cell_buf_.data();
++      uint8_t * ok = pose_ok_buf_.data();
++      // worldToMapFloat() without branches (vectorizable): the same arithmetic and checks
 +      for (size_t i = 0; i < R; ++i) {
-+        unsigned int x_i = 0u, y_i = 0u;
-+        out[i] = worldToMapFloat(xs[i], ys[i], x_i, y_i) ? map[getIndex(x_i, y_i)] : 255u;
++        const bool inside = !(xs[i] < ox) & !(ys[i] < oy);
++        const unsigned int mx = static_cast<unsigned int>(inside ? (xs[i] - ox) / res : 0.0f);
++        const unsigned int my = static_cast<unsigned int>(inside ? (ys[i] - oy) / res : 0.0f);
++        const bool valid = inside & (mx < sx) & (my < sy);
++        cell[i] = valid ? my * sx + mx : 0u;
++        ok[i] = valid;
++      }
++      for (size_t i = 0; i < R; ++i) {
++        const uint8_t c = map[cell[i]];
++        out[i] = ok[i] ? c : uint8_t(255u);
 +      }
 +    }
 +    // Pass 2: the same per-trajectory logic as below with the costs read in pass 1

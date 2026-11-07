@@ -107,6 +107,9 @@ class Probe : public mppi::Optimizer
 {
 public:
   double sink_{0};
+  geometry_msgs::msg::PoseStamped pose_;
+  geometry_msgs::msg::Twist vel_;
+  nav_msgs::msg::Path path_msg_;
   void profile(int reps, bool fuse)
   {
     using clk = std::chrono::steady_clock;
@@ -171,6 +174,36 @@ public:
       q[2] += std::chrono::duration<double, std::micro>(d - c).count();
       q[4] += std::chrono::duration<double, std::micro>(f - e).count();
     }
+    // pieces of evalControl around optimize()
+    {
+      double e[6] = {0, 0, 0, 0, 0, 0};
+      for (int r = 0; r < reps; ++r) {
+        auto a = clk::now();
+        prepare(pose_, vel_, path_msg_, path_msg_.poses.back().pose, nullptr);
+        auto b = clk::now();
+        optimize();
+        auto c = clk::now();
+        Eigen::ArrayXXf ot = getOptimizedTrajectory();
+        auto d = clk::now();
+        auto res = trajectory_validator_->validateTrajectory(
+          ot, control_sequence_, pose_, vel_, path_msg_, path_msg_.poses.back().pose);
+        auto e2 = clk::now();
+        auto ctl = getControlFromSequenceAsTwist(path_msg_.header.stamp);
+        if (settings_.shift_control_sequence) {shiftControlSequence();}
+        auto f = clk::now();
+        sink_ += ot.size() + static_cast<int>(res) + ctl.twist.linear.x;
+        double us[5] = {
+          std::chrono::duration<double, std::micro>(b - a).count(),
+          std::chrono::duration<double, std::micro>(c - b).count(),
+          std::chrono::duration<double, std::micro>(d - c).count(),
+          std::chrono::duration<double, std::micro>(e2 - d).count(),
+          std::chrono::duration<double, std::micro>(f - e2).count()};
+        for (int k = 0; k < 5; ++k) {e[k] += us[k];}
+      }
+      std::printf("evalControl: prepare %.1f us | optimize %.1f | optimal trajectory %.1f | "
+        "validator %.1f | control + shift %.1f\n", e[0] / reps, e[1] / reps, e[2] / reps,
+        e[3] / reps, e[4] / reps);
+    }
     std::printf("update: control cost %.1f us | softmax %.1f | weighted sum (2 GEMV) %.1f | "
       "whole updateControlSequence %.1f\n", q[0] / reps, q[1] / reps, q[2] / reps, q[4] / reps);
     std::printf("fuse=%d  inter-iteration constraints %.1f us | setNoisedControls %.1f | "
@@ -198,6 +231,10 @@ int main()
     params.emplace_back("dummy.model_dt", 0.05);
     params.emplace_back("dummy.vx_max", 1.67);
     params.emplace_back("dummy.fuse_generation", fuse == 1);
+    params.emplace_back("dummy.fast_reductions", fuse == 1);
+    params.emplace_back("dummy.fuse_generation_registers", fuse == 1);
+    params.emplace_back("dummy.CostCritic.fast_cost_reads", fuse == 1);
+    params.emplace_back("dummy.PathAlignCritic.packet_evaluation", fuse == 1);
     params.emplace_back("dummy.CostCritic.consider_footprint", true);
     params.emplace_back("dummy.CostCritic.inflation_layer_name", "inflation_layer");
     params.emplace_back("dummy.CostCritic.use_footprint_bitmask", true);
@@ -217,6 +254,9 @@ int main()
     geometry_msgs::msg::Twist vel;
     vel.linear.x = 1.0;
     for (int k = 0; k < 5; ++k) {opt->evalControl(pose, vel, path, path.poses.back().pose, nullptr);}
+    opt->pose_ = pose;
+    opt->vel_ = vel;
+    opt->path_msg_ = path;
     opt->profile(500, fuse == 1);
   }
   rclcpp::shutdown();

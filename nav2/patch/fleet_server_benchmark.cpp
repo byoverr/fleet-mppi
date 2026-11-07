@@ -176,8 +176,10 @@ int main(int argc, char ** argv)
     params.emplace_back("dummy.CostCritic.use_footprint_bitmask", bitmask != 0);
     params.emplace_back("dummy.fuse_generation", fuse != 0);
     params.emplace_back("dummy.fuse_generation_registers", fuse >= 3);
-    params.emplace_back("dummy.CostCritic.fast_cost_reads", fuse >= 4);
-    params.emplace_back("dummy.PathAlignCritic.packet_evaluation", fuse >= 5);
+    // NO_CCR / NO_PA in the environment switch single options off (ablation)
+    params.emplace_back("dummy.CostCritic.fast_cost_reads", fuse >= 4 && !std::getenv("NO_CCR"));
+    params.emplace_back("dummy.PathAlignCritic.packet_evaluation",
+      fuse >= 5 && !std::getenv("NO_PA"));
     params.emplace_back("dummy.fast_reductions", fuse >= 2);
     rclcpp::NodeOptions options;
     options.parameter_overrides(params);
