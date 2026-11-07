@@ -1,0 +1,13 @@
+uniform +-4: 0 mismatches of 4000000 x 2
+uniform +-100: 0 mismatches of 4000000 x 2
+uniform +-20000: 0 mismatches of 4000000 x 2
+uniform +-100000: 0 mismatches of 4000000 x 2
+uniform +-1e+07: 0 mismatches of 4000000 x 2
+special values: 0 mismatches of 12 x 2
+length 1: 0 mismatches
+length 3: 0 mismatches
+length 5: 0 mismatches
+length 7: 0 mismatches
+length 2001: 0 mismatches
+length 257: 0 mismatches
+TOTAL mismatches=0

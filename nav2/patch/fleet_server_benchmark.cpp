@@ -15,7 +15,7 @@
 // Fleet server: N independent MPPI controllers (own costmap each, default Nav2 critics,
 // 2000 x 56) shared by K worker threads. Robots alternate between the corridor and wall scenes.
 // Reports control cycles per second, per-cycle latency percentiles and CPU time per cycle.
-// Usage: fleet_server_benchmark <robots> <workers> <bitmask 0/1> <costcritic threads> <seconds> [wall_share]
+// Usage: fleet_server_benchmark <robots> <workers> <bitmask 0/1> <costcritic threads> <seconds> [wall_share] [batch] [fuse]
 
 #include <algorithm>
 #include <atomic>
@@ -140,6 +140,8 @@ int main(int argc, char ** argv)
   const int cc_threads = std::atoi(argv[4]);
   const double seconds = std::atof(argv[5]);
   const double wall_share = argc > 6 ? std::atof(argv[6]) : 0.5;
+  const int batch = argc > 7 ? std::atoi(argv[7]) : 2000;
+  const int fuse = argc > 8 ? std::atoi(argv[8]) : 0;
   rclcpp::init(0, nullptr);
   std::vector<Robot> robots(n);
   for (int r = 0; r < n; ++r) {
@@ -150,7 +152,7 @@ int main(int argc, char ** argv)
     std::vector<std::string> critics{"ConstraintCritic", "CostCritic", "GoalCritic",
       "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic",
       "PreferForwardCritic"};
-    TestOptimizerSettings s{2000, 56, 1, 3.0, "diff_drive", true};
+    TestOptimizerSettings s{batch, 56, 1, 3.0, "diff_drive", true};
     std::vector<rclcpp::Parameter> params;
     setUpOptimizerParams(s, critics, params);
     params.emplace_back("dummy.model_dt", 0.05);
@@ -160,6 +162,7 @@ int main(int argc, char ** argv)
     params.emplace_back("dummy.CostCritic.near_goal_distance", 1.0);
     params.emplace_back("dummy.CostCritic.num_threads", cc_threads);
     params.emplace_back("dummy.CostCritic.use_footprint_bitmask", bitmask != 0);
+    params.emplace_back("dummy.fuse_generation", fuse != 0);
     rclcpp::NodeOptions options;
     options.parameter_overrides(params);
     R.node = getDummyNode(options);
@@ -211,9 +214,9 @@ int main(int argc, char ** argv)
   auto pct = [&](double p) {return all.empty() ? 0.0 : all[static_cast<size_t>(p * (all.size() - 1))];};
   const double cps = all.size() / wall;
   std::printf(
-    "robots=%d workers=%d bitmask=%d cc_threads=%d wall_share=%.2f cycles/s=%.1f "
+    "robots=%d workers=%d bitmask=%d cc_threads=%d wall_share=%.2f batch=%d fuse=%d cycles/s=%.1f "
     "robots@20Hz=%.1f p50_ms=%.2f p99_ms=%.2f max_ms=%.2f cpu_ms_per_cycle=%.2f cpu_cores_busy=%.2f\n",
-    n, k, bitmask, cc_threads, wall_share, cps, cps / 20.0, pct(0.5), pct(0.99), pct(1.0),
+    n, k, bitmask, cc_threads, wall_share, batch, fuse, cps, cps / 20.0, pct(0.5), pct(0.99), pct(1.0),
     1000.0 * cpu / all.size(), cpu / wall);
   robots.clear();
   rclcpp::shutdown();

@@ -1,0 +1,13 @@
+scene=0 batch=2000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=0 batch=2000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=0 batch=1000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=0 batch=1000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=0 batch=256 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=0 batch=256 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=1 batch=2000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=1 batch=2000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=1 batch=1000 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=1 batch=1000 clamp_raw_controls=1 cycles=30 mismatches=0
+scene=1 batch=256 clamp_raw_controls=0 cycles=30 mismatches=0
+scene=1 batch=256 clamp_raw_controls=1 cycles=30 mismatches=0
+TOTAL mismatches=0 over 21880320 trajectory points x 8 arrays

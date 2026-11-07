@@ -127,6 +127,7 @@ static void BM_FullCycle(benchmark::State & state)
   const int scene = static_cast<int>(state.range(1));
   const bool bitmask = state.range(2) != 0;
   const int critics_on = static_cast<int>(state.range(3));  // 1 = all default critics, 0 = only CostCritic
+  const bool fuse = state.range(4) != 0;  // fused trajectory generation
 
   auto costmap_ros = makeCostmapRos();
   fillScene(costmap_ros, scene);
@@ -145,6 +146,7 @@ static void BM_FullCycle(benchmark::State & state)
   params.emplace_back("dummy.CostCritic.near_goal_distance", 1.0);
   params.emplace_back("dummy.CostCritic.num_threads", threads);
   params.emplace_back("dummy.CostCritic.use_footprint_bitmask", bitmask);
+  params.emplace_back("dummy.fuse_generation", fuse);
   rclcpp::NodeOptions options;
   options.parameter_overrides(params);
   auto node = getDummyNode(options);
@@ -183,8 +185,8 @@ static void BM_FullCycle(benchmark::State & state)
   state.counters["update_ms"] = upd / n / 1000.0;
 }
 
-BENCHMARK(BM_FullCycle)->ArgNames({"threads", "scene", "bitmask", "critics"})
-->ArgsProduct({{1, 8}, {0, 1}, {0, 1}, {1}})
+BENCHMARK(BM_FullCycle)->ArgNames({"threads", "scene", "bitmask", "critics", "fuse"})
+->ArgsProduct({{1, 8}, {0, 1}, {0, 1}, {1}, {0, 1}})
 ->Unit(benchmark::kMillisecond)->UseRealTime()->MeasureProcessCPUTime()->MinTime(2.0);
 
 BENCHMARK_MAIN();
