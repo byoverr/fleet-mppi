@@ -17,6 +17,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 STRATS = ["S0", "S1", "S2", "S3", "S4"]
 SCEN = ["bypass", "blocked", "open"]
+ADAPT_VARIANTS = [(4, 0.25), (4, 0.4), (8, 0.25), (8, 0.4)]  # (max ticks between plans, near, m)
 
 
 def links():
@@ -66,6 +67,19 @@ def jobs(grid):
                             out.append(dict(grid=grid, scenario=sc, planner="mppi", strategy=s,
                                             seed=seed, link=link, fb="dwa", every=n, aligned=al))
             continue
+        elif grid == "adapt":
+            # adaptive server rate: same links as the rate grid, so res_rate_* are the fixed baselines
+            if not (set(link) <= {"delay"} and link["delay"] in (0.0, 0.05, 0.15)) and not (
+                    link.get("loss") and link.get("ge_len")):
+                continue
+            for sc in SCEN:
+                for s in ("S2", "S3"):
+                    for me, near in ADAPT_VARIANTS:
+                        for seed in seeds_for(link):
+                            out.append(dict(grid=grid, scenario=sc, planner="mppi", strategy=s,
+                                            seed=seed, link=link, fb="dwa", adaptive=True,
+                                            max_every=me, near=near))
+            continue
         else:
             raise SystemExit(f"unknown grid {grid}")
         for sc in SCEN:
@@ -93,7 +107,10 @@ def run(job):
     else:
         net = NetConfig(strategy=job["strategy"], link=LinkConfig(**job["link"]),
                         fallback_planner=job["fb"], server_every=job.get("every", 1),
-                        shift_aligned=job.get("aligned", False))
+                        shift_aligned=job.get("aligned", False),
+                        adaptive=job.get("adaptive", False),
+                        adapt_max_every=job.get("max_every", 4),
+                        adapt_near=job.get("near", 0.25))
         res = run_net_episode(cfg, net)
     res["grid"] = job["grid"]
     res["v"] = float(os.environ.get("MPP_MAX_V", "0.22"))
