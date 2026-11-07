@@ -1,0 +1,100 @@
+diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/critics/path_align_critic.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/critics/path_align_critic.hpp
+index f7ad2fd..1aea9b9 100644
+--- a/nav2_mppi_controller/include/nav2_mppi_controller/critics/path_align_critic.hpp
++++ b/nav2_mppi_controller/include/nav2_mppi_controller/critics/path_align_critic.hpp
+@@ -50,6 +50,7 @@ protected:
+   float threshold_to_consider_{0};
+   float max_path_occupancy_ratio_{0};
+   bool use_path_orientations_{false};
++  bool blocked_evaluation_{false};  // lab: interleave trajectories in blocks, same result
+   unsigned int power_{0};
+   float weight_{0};
+ };
+diff --git a/nav2_mppi_controller/src/critics/path_align_critic.cpp b/nav2_mppi_controller/src/critics/path_align_critic.cpp
+index cfcb761..ab1e4e1 100644
+--- a/nav2_mppi_controller/src/critics/path_align_critic.cpp
++++ b/nav2_mppi_controller/src/critics/path_align_critic.cpp
+@@ -12,6 +12,10 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+ 
++#include <algorithm>
++#include <cstdint>
++#include <vector>
++
+ #include "nav2_mppi_controller/critics/path_align_critic.hpp"
+ 
+ namespace mppi::critics
+@@ -30,6 +34,7 @@ void PathAlignCritic::initialize()
+     threshold_to_consider_,
+     "threshold_to_consider", 0.5f);
+   getParam(use_path_orientations_, "use_path_orientations", false);
++  getParam(blocked_evaluation_, "blocked_evaluation", false);
+ 
+   RCLCPP_INFO(
+     logger_,
+@@ -111,6 +116,64 @@ void PathAlignCritic::score(CriticData & data)
+     Eigen::Stride<-1, -1>(outer_stride, 1));
+   const auto traj_sampled_size = T_x.cols();
+ 
++  if (blocked_evaluation_) {
++    // Same arithmetic per trajectory as the loop below, in the same order. Trajectories are
++    // processed in blocks: the inner loop runs over independent trajectories (contiguous in
++    // the column-major arrays), so the dependent chain of one trajectory does not stall the core.
++    constexpr size_t kBlock = 256;
++    std::vector<uint8_t> valid(path_pts_valid.begin(), path_pts_valid.end());
++    float acc[kBlock], sum[kBlock], px[kBlock], py[kBlock];
++    unsigned int pt[kBlock], ns[kBlock];
++    const size_t cstride = static_cast<size_t>(outer_stride);
++    for (size_t t0 = 0; t0 < batch_size; t0 += kBlock) {
++      const size_t n = std::min(kBlock, batch_size - t0);
++      for (size_t i = 0; i < n; ++i) {
++        acc[i] = 0.0f;
++        sum[i] = 0.0f;
++        pt[i] = 0u;
++        ns[i] = 0u;
++        px[i] = T_x(t0 + i, 0);
++        py[i] = T_y(t0 + i, 0);
++      }
++      for (int p = 1; p < traj_sampled_size; p++) {
++        const float * xs = data.trajectories.x.data() + p * cstride + t0;
++        const float * ys = data.trajectories.y.data() + p * cstride + t0;
++        const float * yaws = data.trajectories.yaws.data() + p * cstride + t0;
++        for (size_t i = 0; i < n; ++i) {
++          const float Tx = xs[i];
++          const float Ty = ys[i];
++          float ddx = Tx - px[i];
++          float ddy = Ty - py[i];
++          px[i] = Tx;
++          py[i] = Ty;
++          acc[i] += sqrtf(ddx * ddx + ddy * ddy);
++          pt[i] = utils::findClosestPathPt(path_integrated_distances, acc[i], pt[i]);
++          if (valid[pt[i]]) {
++            const auto & pose = path[pt[i]];
++            ddx = pose.x - Tx;
++            ddy = pose.y - Ty;
++            ns[i]++;
++            if (use_path_orientations_) {
++              const float dyw = angles::shortest_angular_distance(pose.theta, yaws[i]);
++              sum[i] += sqrtf(ddx * ddx + ddy * ddy + dyw * dyw);
++            } else {
++              sum[i] += sqrtf(ddx * ddx + ddy * ddy);
++            }
++          }
++        }
++      }
++      for (size_t i = 0; i < n; ++i) {
++        cost(t0 + i) = ns[i] > 0u ? sum[i] / static_cast<float>(ns[i]) : 0.0f;
++      }
++    }
++    if (power_ > 1u) {
++      data.costs += (cost * weight_).pow(power_).eval();
++    } else {
++      data.costs += (cost * weight_).eval();
++    }
++    return;
++  }
++
+   for (size_t t = 0; t < batch_size; ++t) {
+     summed_path_dist = 0.0f;
+     num_samples = 0u;

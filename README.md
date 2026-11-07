@@ -6,7 +6,7 @@
 ## Что где
 
 - `SUMMARY.md`, `VERIFICATION.md`: общие выводы и проверка первого раунда.
-- `nav2/`: битовые маски в CostCritic и слитая генерация траекторий (`fuse_generation`). Итоги в `nav2/RESULTS.md` (раздел 12 — потолок для В1), код в `nav2/patch/`, замеры в `nav2/results/`.
+- `nav2/`: битовые маски в CostCritic и слитая генерация траекторий (`fuse_generation`). Итоги в `nav2/RESULTS.md` (раздел 12 — потолок для В1, раздел 13 — сравнение с текущим Nav2 main: крупный робот у стены в 14.8 раза быстрее), код в `nav2/patch/`, замеры в `nav2/results/`.
 - `nav2/workspace_snapshot/`: рабочая копия Nav2 из контейнера `nav2lab`, база: коммит из `nav2_commit.txt`.
 - `nav2/trajectory_buffer/`: буфер траектории на роботе (пакет ROS 2).
 - `expW/`: модель сети и частоты сервера. Итоги в `expW/RESULTS.md`; адаптивная частота сервера (вариант В2) в `expW/RESULTS_ADAPT.md`; неточный привод и его идентификация (В3, Г8) в `expW/RESULTS_MISMATCH.md`.
@@ -22,7 +22,7 @@ cd mpp && uv sync && cd ..
 cd expW && MPP_MAX_V=0.6 uv run --project ../mpp python run_grid.py main out.jsonl 3
 ```
 
-Контейнер Nav2: `docker start nav2lab`. Образ собирается из `nav2/Dockerfile`.
+Контейнер Nav2: `docker start nav2lab`. Образ собирается из `nav2/Dockerfile`. Чистый Nav2 main для сравнения лежит в контейнере в `/ws_main` (git worktree того же коммита).
 
 ## Что случилось при переносе (6 ноября 2026)
 

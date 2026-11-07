@@ -1,0 +1,2 @@
+BM_FullCycle/threads:1/scene:0/bitmask:0/critics:1/fuse:0/min_time:2.000/process_time/real_time_median      0.768 ms        0.768 ms            3 critics_ms=0.286211 gen_ms=0.321759 update_ms=0.0956338
+BM_FullCycle/threads:1/scene:1/bitmask:0/critics:1/fuse:0/min_time:2.000/process_time/real_time_median       14.7 ms         14.7 ms            3 critics_ms=14.1911 gen_ms=0.323913 update_ms=0.0963189

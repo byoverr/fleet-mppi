@@ -1,0 +1,21 @@
+critics time per cycle, us (median of 200), 2000 x 56, big robot, masks + fused gen
+| scene | state | none | CostCritic | GoalCritic | GoalAngleCritic | PathAlignCritic | PathFollowCritic | PathAngleCritic | PreferForwardCritic | all |
+| corridor | straight | 14 | 152 | -0 | 0 | 0 | 0 | 0 | 31 | 359 |
+| corridor | misaligned -0.8 rad | 13 | 151 | -0 | -0 | 0 | 0 | 12 | 30 | 206 |
+| corridor | curve R=3 m | 14 | 152 | 0 | -0 | -0 | 0 | -0 | 31 | 370 |
+| corridor | near goal 0.7 m | 14 | 150 | 19 | -0 | -0 | -0 | -0 | 31 | 217 |
+| wall | straight | 14 | 205 | -1 | -0 | -1 | 0 | -1 | 31 | 433 |
+| wall | misaligned -0.8 rad | 13 | 334 | 0 | -0 | -0 | -0 | 12 | 31 | 369 |
+| wall | curve R=3 m | 14 | 206 | -0 | -0 | -1 | -0 | -0 | 31 | 275 |
+| wall | near goal 0.7 m | 14 | 208 | 19 | -0 | -0 | 0 | 0 | 30 | 270 |
+
+all minus one critic: what the critic costs inside the full set, us
+| scene | state | -CostCritic | -GoalCritic | -GoalAngleCritic | -PathAlignCritic | -PathFollowCritic | -PathAngleCritic | -PreferForwardCritic |
+| corridor | straight | 171 | 8 | 4 | 173 | 175 | 2 | 36 |
+| corridor | misaligned -0.8 rad | 152 | 2 | 2 | -1 | -3 | 12 | 30 |
+| corridor | curve R=3 m | 159 | -3 | -14 | 171 | 167 | 7 | 40 |
+| corridor | near goal 0.7 m | 159 | 26 | 0 | 1 | -16 | -7 | 31 |
+| wall | straight | 254 | 23 | 11 | 197 | 197 | -26 | -23 |
+| wall | misaligned -0.8 rad | 384 | 35 | 39 | 33 | 28 | 36 | 75 |
+| wall | curve R=3 m | 57 | 24 | 14 | 11 | 40 | 10 | 41 |
+| wall | near goal 0.7 m | 232 | 24 | 4 | 2 | -3 | -2 | 36 |
