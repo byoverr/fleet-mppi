@@ -1,8 +1,8 @@
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
-index a201a1d..d3df607 100644
+index a201a1d..70d13b6 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
 +++ b/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
-@@ -111,6 +111,21 @@ protected:
+@@ -111,6 +111,26 @@ protected:
    std::condition_variable noise_cond_;
    std::mutex noise_lock_;
    bool active_{false}, ready_{false}, regenerate_noises_{false};
@@ -21,25 +21,31 @@ index a201a1d..d3df607 100644
 +  int noise_bank_step_{0};
 +  Eigen::Index bank_r0_{0};
 +  uint64_t bank_state_{0x9E3779B97F4A7C15ull};
++  // Lab options for the bank (default off): noise_bank_fixed rows are always the first rows of
++  // the bank (persistent candidates, as with fixed noise); noise_antithetic: the moving part is
++  // half drawn rows and half their negatives (mirrored sampling).
++  int noise_bank_fixed_{0};
++  bool noise_antithetic_{false};
  };
  
  }  // namespace mppi
 diff --git a/nav2_mppi_controller/src/noise_generator.cpp b/nav2_mppi_controller/src/noise_generator.cpp
-index b8a9cbd..7b4cccd 100644
+index b8a9cbd..d52f144 100644
 --- a/nav2_mppi_controller/src/noise_generator.cpp
 +++ b/nav2_mppi_controller/src/noise_generator.cpp
-@@ -14,8 +14,10 @@
+@@ -14,8 +14,11 @@
  
  #include "nav2_mppi_controller/tools/noise_generator.hpp"
  
 +#include <cmath>
  #include <memory>
  #include <mutex>
++#include <algorithm>
 +#include <vector>
  
  namespace mppi
  {
-@@ -34,6 +36,16 @@ void NoiseGenerator::initialize(
+@@ -34,6 +37,18 @@ void NoiseGenerator::initialize(
  
    auto getParam = param_handler->getParamGetter(name);
    getParam(regenerate_noises_, "regenerate_noises", false);
@@ -47,6 +53,8 @@ index b8a9cbd..7b4cccd 100644
 +  getParam(lowpass_order_, "lowpass_order", 2);
 +  getParam(noise_bank_rows_, "noise_bank_rows", 0);
 +  getParam(noise_bank_step_, "noise_bank_step", 0);
++  getParam(noise_bank_fixed_, "noise_bank_fixed", 0);
++  getParam(noise_antithetic_, "noise_antithetic", false);
 +  int noise_seed;
 +  getParam(noise_seed, "noise_seed", -1);
 +  if (noise_seed >= 0) {
@@ -56,7 +64,7 @@ index b8a9cbd..7b4cccd 100644
  
    if (regenerate_noises_) {
      noise_thread_ = std::thread(std::bind(&NoiseGenerator::noiseThread, this));
-@@ -44,8 +56,13 @@ void NoiseGenerator::initialize(
+@@ -44,8 +59,13 @@ void NoiseGenerator::initialize(
  
  void NoiseGenerator::shutdown()
  {
@@ -72,7 +80,7 @@ index b8a9cbd..7b4cccd 100644
    noise_cond_.notify_all();
    if (noise_thread_.joinable()) {
      noise_thread_.join();
-@@ -69,6 +86,30 @@ void NoiseGenerator::setNoisedControls(
+@@ -69,6 +89,45 @@ void NoiseGenerator::setNoisedControls(
  {
    std::unique_lock<std::mutex> guard(noise_lock_);
  
@@ -80,7 +88,10 @@ index b8a9cbd..7b4cccd 100644
 +    // Noise bank: each cycle take a contiguous block of batch_size rows starting at a random
 +    // row (xorshift64). The bank is column-major, so every column of the block is one memcpy.
 +    const Eigen::Index K = settings_.batch_size;
-+    const Eigen::Index span = noises_vx_.rows() - K + 1;
++    const Eigen::Index M = std::clamp<Eigen::Index>(noise_bank_fixed_, 0, K);  // fixed rows
++    const Eigen::Index R = K - M;  // rows from the moving block
++    const Eigen::Index H = noise_antithetic_ ? (R + 1) / 2 : R;  // distinct rows drawn
++    const Eigen::Index span = noises_vx_.rows() - M - H + 1;
 +    Eigen::Index r0;
 +    if (noise_bank_step_ > 0) {
 +      bank_r0_ = (bank_r0_ + noise_bank_step_) % span;
@@ -91,10 +102,22 @@ index b8a9cbd..7b4cccd 100644
 +      bank_state_ ^= bank_state_ << 17;
 +      r0 = static_cast<Eigen::Index>(bank_state_ % static_cast<uint64_t>(span));
 +    }
-+    state.cvx = noises_vx_.middleRows(r0, K).rowwise() + control_sequence.vx.transpose();
-+    state.cwz = noises_wz_.middleRows(r0, K).rowwise() + control_sequence.wz.transpose();
++    r0 += M;
++    auto fill = [&](Eigen::ArrayXXf & out, const Eigen::ArrayXXf & bank, const Eigen::ArrayXf & u) {
++        out.resize(K, settings_.time_steps);
++        const auto uT = u.transpose();
++        if (M > 0) {
++          out.topRows(M) = bank.topRows(M).rowwise() + uT;
++        }
++        out.middleRows(M, H) = bank.middleRows(r0, H).rowwise() + uT;
++        if (R > H) {
++          out.bottomRows(R - H) = (-bank.middleRows(r0, R - H)).rowwise() + uT;
++        }
++      };
++    fill(state.cvx, noises_vx_, control_sequence.vx);
++    fill(state.cwz, noises_wz_, control_sequence.wz);
 +    if (is_holonomic_) {
-+      state.cvy = noises_vy_.middleRows(r0, K).rowwise() + control_sequence.vy.transpose();
++      fill(state.cvy, noises_vy_, control_sequence.vy);
 +    } else {
 +      state.cvy.setZero(K, settings_.time_steps);
 +    }
@@ -103,7 +126,7 @@ index b8a9cbd..7b4cccd 100644
    state.cvx = noises_vx_.rowwise() + control_sequence.vx.transpose();
    state.cvy = noises_vy_.rowwise() + control_sequence.vy.transpose();
    state.cwz = noises_wz_.rowwise() + control_sequence.wz.transpose();
-@@ -108,16 +149,68 @@ void NoiseGenerator::noiseThread()
+@@ -108,16 +167,68 @@ void NoiseGenerator::noiseThread()
    } while (active_);
  }
  

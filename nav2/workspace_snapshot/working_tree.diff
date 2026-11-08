@@ -285,7 +285,7 @@ index 8ef9ea2..33cde86 100644
     * @brief With input pose, speed find the vehicle's output pose at pred_dt in future
     * @param pose pose of the robot
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
-index a431e56..5549adc 100644
+index a431e56..67cdc2c 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
 +++ b/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
 @@ -215,6 +215,25 @@ protected:
@@ -314,7 +314,7 @@ index a431e56..5549adc 100644
    /**
     * @brief Apply inter-iteration dynamic feasibility constraints on the
     * first control sequence element before noise generation
-@@ -313,6 +332,13 @@ protected:
+@@ -313,6 +332,19 @@ protected:
    OptimalTrajectoryValidator::Ptr trajectory_validator_;
  
    models::OptimizerSettings settings_;
@@ -322,6 +322,12 @@ index a431e56..5549adc 100644
 +  bool fuse_generation_registers_{false};
 +  bool bias_stop_sample_{false};
 +  bool bias_plan_sample_{false};
++  // Lab smoothing options (default off). update_rate < 1: the new control sequence is
++  // update_rate * (softmax average) + (1 - update_rate) * (previous, shifted) sequence.
++  // smooth_cmd_weight > 0: adds weight * (sample wz at the sent step - last sent wz)^2 to each
++  // sample's cost, so samples that keep the turn rate are preferred.
++  float update_rate_{1.0f};
++  float smooth_cmd_weight_{0.0f};
 +  bool fast_reductions_{false};
 +  Eigen::ArrayXf cc_acc_;
 +  Eigen::ArrayXf fg_yaw_, fg_x_, fg_y_, fg_cos_, fg_sin_, fg_dx_, fg_dy_;
@@ -329,10 +335,10 @@ index a431e56..5549adc 100644
  
    models::State state_;
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
-index a201a1d..d3df607 100644
+index a201a1d..70d13b6 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
 +++ b/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
-@@ -111,6 +111,21 @@ protected:
+@@ -111,6 +111,26 @@ protected:
    std::condition_variable noise_cond_;
    std::mutex noise_lock_;
    bool active_{false}, ready_{false}, regenerate_noises_{false};
@@ -351,6 +357,11 @@ index a201a1d..d3df607 100644
 +  int noise_bank_step_{0};
 +  Eigen::Index bank_r0_{0};
 +  uint64_t bank_state_{0x9E3779B97F4A7C15ull};
++  // Lab options for the bank (default off): noise_bank_fixed rows are always the first rows of
++  // the bank (persistent candidates, as with fixed noise); noise_antithetic: the moving part is
++  // half drawn rows and half their negatives (mirrored sampling).
++  int noise_bank_fixed_{0};
++  bool noise_antithetic_{false};
  };
  
  }  // namespace mppi
@@ -956,21 +967,22 @@ index cfcb761..b7a1703 100644
      summed_path_dist = 0.0f;
      num_samples = 0u;
 diff --git a/nav2_mppi_controller/src/noise_generator.cpp b/nav2_mppi_controller/src/noise_generator.cpp
-index b8a9cbd..7b4cccd 100644
+index b8a9cbd..d52f144 100644
 --- a/nav2_mppi_controller/src/noise_generator.cpp
 +++ b/nav2_mppi_controller/src/noise_generator.cpp
-@@ -14,8 +14,10 @@
+@@ -14,8 +14,11 @@
  
  #include "nav2_mppi_controller/tools/noise_generator.hpp"
  
 +#include <cmath>
  #include <memory>
  #include <mutex>
++#include <algorithm>
 +#include <vector>
  
  namespace mppi
  {
-@@ -34,6 +36,16 @@ void NoiseGenerator::initialize(
+@@ -34,6 +37,18 @@ void NoiseGenerator::initialize(
  
    auto getParam = param_handler->getParamGetter(name);
    getParam(regenerate_noises_, "regenerate_noises", false);
@@ -978,6 +990,8 @@ index b8a9cbd..7b4cccd 100644
 +  getParam(lowpass_order_, "lowpass_order", 2);
 +  getParam(noise_bank_rows_, "noise_bank_rows", 0);
 +  getParam(noise_bank_step_, "noise_bank_step", 0);
++  getParam(noise_bank_fixed_, "noise_bank_fixed", 0);
++  getParam(noise_antithetic_, "noise_antithetic", false);
 +  int noise_seed;
 +  getParam(noise_seed, "noise_seed", -1);
 +  if (noise_seed >= 0) {
@@ -987,7 +1001,7 @@ index b8a9cbd..7b4cccd 100644
  
    if (regenerate_noises_) {
      noise_thread_ = std::thread(std::bind(&NoiseGenerator::noiseThread, this));
-@@ -44,8 +56,13 @@ void NoiseGenerator::initialize(
+@@ -44,8 +59,13 @@ void NoiseGenerator::initialize(
  
  void NoiseGenerator::shutdown()
  {
@@ -1003,7 +1017,7 @@ index b8a9cbd..7b4cccd 100644
    noise_cond_.notify_all();
    if (noise_thread_.joinable()) {
      noise_thread_.join();
-@@ -69,6 +86,30 @@ void NoiseGenerator::setNoisedControls(
+@@ -69,6 +89,45 @@ void NoiseGenerator::setNoisedControls(
  {
    std::unique_lock<std::mutex> guard(noise_lock_);
  
@@ -1011,7 +1025,10 @@ index b8a9cbd..7b4cccd 100644
 +    // Noise bank: each cycle take a contiguous block of batch_size rows starting at a random
 +    // row (xorshift64). The bank is column-major, so every column of the block is one memcpy.
 +    const Eigen::Index K = settings_.batch_size;
-+    const Eigen::Index span = noises_vx_.rows() - K + 1;
++    const Eigen::Index M = std::clamp<Eigen::Index>(noise_bank_fixed_, 0, K);  // fixed rows
++    const Eigen::Index R = K - M;  // rows from the moving block
++    const Eigen::Index H = noise_antithetic_ ? (R + 1) / 2 : R;  // distinct rows drawn
++    const Eigen::Index span = noises_vx_.rows() - M - H + 1;
 +    Eigen::Index r0;
 +    if (noise_bank_step_ > 0) {
 +      bank_r0_ = (bank_r0_ + noise_bank_step_) % span;
@@ -1022,10 +1039,22 @@ index b8a9cbd..7b4cccd 100644
 +      bank_state_ ^= bank_state_ << 17;
 +      r0 = static_cast<Eigen::Index>(bank_state_ % static_cast<uint64_t>(span));
 +    }
-+    state.cvx = noises_vx_.middleRows(r0, K).rowwise() + control_sequence.vx.transpose();
-+    state.cwz = noises_wz_.middleRows(r0, K).rowwise() + control_sequence.wz.transpose();
++    r0 += M;
++    auto fill = [&](Eigen::ArrayXXf & out, const Eigen::ArrayXXf & bank, const Eigen::ArrayXf & u) {
++        out.resize(K, settings_.time_steps);
++        const auto uT = u.transpose();
++        if (M > 0) {
++          out.topRows(M) = bank.topRows(M).rowwise() + uT;
++        }
++        out.middleRows(M, H) = bank.middleRows(r0, H).rowwise() + uT;
++        if (R > H) {
++          out.bottomRows(R - H) = (-bank.middleRows(r0, R - H)).rowwise() + uT;
++        }
++      };
++    fill(state.cvx, noises_vx_, control_sequence.vx);
++    fill(state.cwz, noises_wz_, control_sequence.wz);
 +    if (is_holonomic_) {
-+      state.cvy = noises_vy_.middleRows(r0, K).rowwise() + control_sequence.vy.transpose();
++      fill(state.cvy, noises_vy_, control_sequence.vy);
 +    } else {
 +      state.cvy.setZero(K, settings_.time_steps);
 +    }
@@ -1034,7 +1063,7 @@ index b8a9cbd..7b4cccd 100644
    state.cvx = noises_vx_.rowwise() + control_sequence.vx.transpose();
    state.cvy = noises_vy_.rowwise() + control_sequence.vy.transpose();
    state.cwz = noises_wz_.rowwise() + control_sequence.wz.transpose();
-@@ -108,16 +149,68 @@ void NoiseGenerator::noiseThread()
+@@ -108,16 +167,68 @@ void NoiseGenerator::noiseThread()
    } while (active_);
  }
  
@@ -1107,7 +1136,7 @@ index b8a9cbd..7b4cccd 100644
  }
  
 diff --git a/nav2_mppi_controller/src/optimizer.cpp b/nav2_mppi_controller/src/optimizer.cpp
-index b2b18c0..33526e3 100644
+index b2b18c0..c3dcff2 100644
 --- a/nav2_mppi_controller/src/optimizer.cpp
 +++ b/nav2_mppi_controller/src/optimizer.cpp
 @@ -16,6 +16,7 @@
@@ -1126,7 +1155,7 @@ index b2b18c0..33526e3 100644
  
  namespace mppi
  {
-@@ -145,6 +147,11 @@ void Optimizer::getParams()
+@@ -145,6 +147,13 @@ void Optimizer::getParams()
    getParam(s.model_delay_vy, "model_delay_vy", 0.0f);
    getParam(s.model_delay_wz, "model_delay_wz", 0.0f);
    getParam(s.clamp_raw_controls, "clamp_raw_controls", false);
@@ -1135,10 +1164,12 @@ index b2b18c0..33526e3 100644
 +  getParam(fast_reductions_, "fast_reductions", false);
 +  getParam(bias_stop_sample_, "bias_stop_sample", false);
 +  getParam(bias_plan_sample_, "bias_plan_sample", false);
++  getParam(update_rate_, "update_rate", 1.0f);
++  getParam(smooth_cmd_weight_, "smooth_cmd_weight", 0.0f);
    getParam(s.time_steps, "time_steps", 56);
    getParam(s.batch_size, "batch_size", 1000);
    getParam(s.iteration_count, "iteration_count", 1);
-@@ -388,6 +395,7 @@ void Optimizer::prepare(
+@@ -388,6 +397,7 @@ void Optimizer::prepare(
    critics_data_.fail_flag = false;
    critics_data_.goal_checker = goal_checker;
    critics_data_.motion_model = motion_model_;
@@ -1146,7 +1177,7 @@ index b2b18c0..33526e3 100644
    critics_data_.furthest_reached_path_point.reset();
    critics_data_.path_pts_valid.reset();
  }
-@@ -411,10 +419,173 @@ void Optimizer::generateNoisedTrajectories()
+@@ -411,10 +421,173 @@ void Optimizer::generateNoisedTrajectories()
    applyControlSequenceInterIterationConstraints();
    noise_generator_.setNoisedControls(state_, control_sequence_);
    noise_generator_.generateNextNoises();
@@ -1320,7 +1351,7 @@ index b2b18c0..33526e3 100644
  void Optimizer::applyControlSequenceInterIterationConstraints()
  {
    // Enforce t=0 to be dynamically feasible from the current speed for inter-iteration feasibility
-@@ -657,16 +828,25 @@ void Optimizer::updateControlSequence()
+@@ -657,16 +830,25 @@ void Optimizer::updateControlSequence()
    const bool is_holo = isHolonomic();
    auto & s = settings_;
  
@@ -1356,8 +1387,16 @@ index b2b18c0..33526e3 100644
    }
  
    if (is_holo) {
-@@ -678,7 +858,8 @@ void Optimizer::updateControlSequence()
+@@ -676,18 +858,37 @@ void Optimizer::updateControlSequence()
+     costs_ += (gamma_vy * (bounded_noises_vy.rowwise() * vy_T).rowwise().sum()).eval();
+   }
  
++  if (smooth_cmd_weight_ > 0.0f) {
++    const Eigen::Index col = s.shift_control_sequence ? 1 : 0;
++    const float w_last = static_cast<float>(last_command_vel_.angular.z);
++    costs_ += (smooth_cmd_weight_ * (state_.cwz.col(col) - w_last).square()).eval();
++  }
++
    auto costs_normalized = costs_ - costs_.minCoeff();
    const float inv_temp = 1.0f / s.temperature;
 -  auto softmaxes = (-inv_temp * costs_normalized).exp().eval();
@@ -1366,3 +1405,24 @@ index b2b18c0..33526e3 100644
    softmaxes /= softmaxes.sum();
  
    auto softmax_mat = softmaxes.matrix();
++  models::ControlSequence previous;
++  if (update_rate_ < 1.0f) {
++    previous = control_sequence_;
++  }
+   control_sequence_.vx = state_.cvx.transpose().matrix() * softmax_mat;
+   control_sequence_.wz = state_.cwz.transpose().matrix() * softmax_mat;
+ 
+   if (is_holo) {
+     control_sequence_.vy = state_.cvy.transpose().matrix() * softmax_mat;
+   }
++  if (update_rate_ < 1.0f) {
++    const float b = update_rate_;
++    control_sequence_.vx = b * control_sequence_.vx + (1.0f - b) * previous.vx;
++    control_sequence_.wz = b * control_sequence_.wz + (1.0f - b) * previous.wz;
++    if (is_holo) {
++      control_sequence_.vy = b * control_sequence_.vy + (1.0f - b) * previous.vy;
++    }
++  }
+ 
+   utils::savitskyGolayFilter(control_sequence_, control_history_, settings_);
+ 
