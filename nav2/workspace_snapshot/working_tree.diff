@@ -56,10 +56,10 @@ index 5049135..9bc0cb3 100644
  #### Path Align Critic
   | Parameter                  | Type   | Definition                                                                                                                         |
 diff --git a/nav2_mppi_controller/benchmark/CMakeLists.txt b/nav2_mppi_controller/benchmark/CMakeLists.txt
-index 3c5ea7d..418157d 100644
+index 3c5ea7d..7c9547a 100644
 --- a/nav2_mppi_controller/benchmark/CMakeLists.txt
 +++ b/nav2_mppi_controller/benchmark/CMakeLists.txt
-@@ -1,8 +1,19 @@
+@@ -1,8 +1,20 @@
  find_package(benchmark REQUIRED)
  
  set(BENCHMARK_NAMES
@@ -78,10 +78,11 @@ index 3c5ea7d..418157d 100644
 +  sincos_equivalence
 +  critic_states
 +  critic_equivalence
++  closed_loop_benchmark
  )
  
  foreach(name IN LISTS BENCHMARK_NAMES)
-@@ -11,15 +22,18 @@ foreach(name IN LISTS BENCHMARK_NAMES)
+@@ -11,15 +23,18 @@ foreach(name IN LISTS BENCHMARK_NAMES)
    )
    target_link_libraries(${name}
      benchmark
@@ -284,7 +285,7 @@ index 8ef9ea2..33cde86 100644
     * @brief With input pose, speed find the vehicle's output pose at pred_dt in future
     * @param pose pose of the robot
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
-index a431e56..8514ba8 100644
+index a431e56..5549adc 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
 +++ b/nav2_mppi_controller/include/nav2_mppi_controller/optimizer.hpp
 @@ -215,6 +215,25 @@ protected:
@@ -313,18 +314,46 @@ index a431e56..8514ba8 100644
    /**
     * @brief Apply inter-iteration dynamic feasibility constraints on the
     * first control sequence element before noise generation
-@@ -313,6 +332,11 @@ protected:
+@@ -313,6 +332,13 @@ protected:
    OptimalTrajectoryValidator::Ptr trajectory_validator_;
  
    models::OptimizerSettings settings_;
 +  bool fuse_generation_{false};
 +  bool fuse_generation_registers_{false};
++  bool bias_stop_sample_{false};
++  bool bias_plan_sample_{false};
 +  bool fast_reductions_{false};
 +  Eigen::ArrayXf cc_acc_;
 +  Eigen::ArrayXf fg_yaw_, fg_x_, fg_y_, fg_cos_, fg_sin_, fg_dx_, fg_dy_;
    size_t fallback_count_{0};
  
    models::State state_;
+diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
+index a201a1d..d3df607 100644
+--- a/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
++++ b/nav2_mppi_controller/include/nav2_mppi_controller/tools/noise_generator.hpp
+@@ -111,6 +111,21 @@ protected:
+   std::condition_variable noise_cond_;
+   std::mutex noise_lock_;
+   bool active_{false}, ready_{false}, regenerate_noises_{false};
++
++  // Lab options (default off): low-pass filtered noise as in LP-MPPI (Kicki, ICRA 2026),
++  // Butterworth of order lowpass_order at lowpass_cutoff Hz on the model_dt grid, run over a
++  // warm-up so the filtered noise is stationary, then rescaled to the configured std.
++  void lowPassRows(Eigen::ArrayXXf & noise, float std) const;
++  float lowpass_cutoff_{0.0f};
++  int lowpass_order_{2};
++  // Lab option (default off): a bank of noise_bank_rows rows drawn once; every cycle the
++  // batch takes a contiguous block of batch_size rows. noise_bank_step = 0: the block starts at
++  // a random row each cycle; > 0: the block slides by that many rows per cycle, so only that
++  // many samples are replaced and the rest stay as in the previous cycle.
++  int noise_bank_rows_{0};
++  int noise_bank_step_{0};
++  Eigen::Index bank_r0_{0};
++  uint64_t bank_state_{0x9E3779B97F4A7C15ull};
+ };
+ 
+ }  // namespace mppi
 diff --git a/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp b/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp
 index 9fa3714..61f2adf 100644
 --- a/nav2_mppi_controller/include/nav2_mppi_controller/tools/utils.hpp
@@ -926,8 +955,143 @@ index cfcb761..b7a1703 100644
    for (size_t t = 0; t < batch_size; ++t) {
      summed_path_dist = 0.0f;
      num_samples = 0u;
+diff --git a/nav2_mppi_controller/src/noise_generator.cpp b/nav2_mppi_controller/src/noise_generator.cpp
+index b8a9cbd..beb885e 100644
+--- a/nav2_mppi_controller/src/noise_generator.cpp
++++ b/nav2_mppi_controller/src/noise_generator.cpp
+@@ -14,8 +14,10 @@
+ 
+ #include "nav2_mppi_controller/tools/noise_generator.hpp"
+ 
++#include <cmath>
+ #include <memory>
+ #include <mutex>
++#include <vector>
+ 
+ namespace mppi
+ {
+@@ -34,6 +36,16 @@ void NoiseGenerator::initialize(
+ 
+   auto getParam = param_handler->getParamGetter(name);
+   getParam(regenerate_noises_, "regenerate_noises", false);
++  getParam(lowpass_cutoff_, "lowpass_cutoff", 0.0f);
++  getParam(lowpass_order_, "lowpass_order", 2);
++  getParam(noise_bank_rows_, "noise_bank_rows", 0);
++  getParam(noise_bank_step_, "noise_bank_step", 0);
++  int noise_seed;
++  getParam(noise_seed, "noise_seed", -1);
++  if (noise_seed >= 0) {
++    generator_.seed(static_cast<unsigned int>(noise_seed));
++    bank_state_ ^= 0xD1B54A32D192ED03ull * static_cast<uint64_t>(noise_seed + 1);
++  }
+ 
+   if (regenerate_noises_) {
+     noise_thread_ = std::thread(std::bind(&NoiseGenerator::noiseThread, this));
+@@ -69,6 +81,30 @@ void NoiseGenerator::setNoisedControls(
+ {
+   std::unique_lock<std::mutex> guard(noise_lock_);
+ 
++  if (noise_bank_rows_ > 0 && !regenerate_noises_) {
++    // Noise bank: each cycle take a contiguous block of batch_size rows starting at a random
++    // row (xorshift64). The bank is column-major, so every column of the block is one memcpy.
++    const Eigen::Index K = settings_.batch_size;
++    const Eigen::Index span = noises_vx_.rows() - K + 1;
++    Eigen::Index r0;
++    if (noise_bank_step_ > 0) {
++      bank_r0_ = (bank_r0_ + noise_bank_step_) % span;
++      r0 = bank_r0_;
++    } else {
++      bank_state_ ^= bank_state_ << 13;
++      bank_state_ ^= bank_state_ >> 7;
++      bank_state_ ^= bank_state_ << 17;
++      r0 = static_cast<Eigen::Index>(bank_state_ % static_cast<uint64_t>(span));
++    }
++    state.cvx = noises_vx_.middleRows(r0, K).rowwise() + control_sequence.vx.transpose();
++    state.cwz = noises_wz_.middleRows(r0, K).rowwise() + control_sequence.wz.transpose();
++    if (is_holonomic_) {
++      state.cvy = noises_vy_.middleRows(r0, K).rowwise() + control_sequence.vy.transpose();
++    } else {
++      state.cvy.setZero(K, settings_.time_steps);
++    }
++    return;
++  }
+   state.cvx = noises_vx_.rowwise() + control_sequence.vx.transpose();
+   state.cvy = noises_vy_.rowwise() + control_sequence.vy.transpose();
+   state.cwz = noises_wz_.rowwise() + control_sequence.wz.transpose();
+@@ -108,16 +144,68 @@ void NoiseGenerator::noiseThread()
+   } while (active_);
+ }
+ 
++void NoiseGenerator::lowPassRows(Eigen::ArrayXXf & noise, float std) const
++{
++  // Cascade of RBJ low-pass biquads with Butterworth Q values (+ a first-order section for
++  // odd orders), applied along each row; the first kWarm columns are dropped.
++  constexpr int kWarm = 40;
++  const int rows = static_cast<int>(noise.rows());
++  const int cols = static_cast<int>(noise.cols()) - kWarm;
++  const double fs = 1.0 / settings_.model_dt;
++  const double w0 = 2.0 * M_PI * std::min(static_cast<double>(lowpass_cutoff_), 0.45 * fs) / fs;
++  const int order = std::max(1, lowpass_order_);
++  struct Sec {double b0, b1, b2, a1, a2;};
++  std::vector<Sec> secs;
++  for (int k = 0; k < order / 2; ++k) {
++    const double q = 1.0 / (2.0 * std::cos(M_PI * (2 * k + 1) / (2.0 * order)));
++    const double al = std::sin(w0) / (2.0 * q), cw = std::cos(w0), a0 = 1.0 + al;
++    secs.push_back({(1 - cw) / 2 / a0, (1 - cw) / a0, (1 - cw) / 2 / a0, -2 * cw / a0,
++        (1 - al) / a0});
++  }
++  if (order % 2) {
++    const double k = std::tan(w0 / 2), a0 = 1 + k;
++    secs.push_back({k / a0, k / a0, 0.0, (k - 1) / a0, 0.0});
++  }
++  Eigen::ArrayXXf out(rows, cols);
++  for (int r = 0; r < rows; ++r) {
++    std::vector<double> x(static_cast<size_t>(cols + kWarm));
++    for (int t = 0; t < cols + kWarm; ++t) {x[static_cast<size_t>(t)] = noise(r, t);}
++    for (const auto & sc : secs) {
++      double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
++      for (auto & v : x) {
++        const double y = sc.b0 * v + sc.b1 * x1 + sc.b2 * x2 - sc.a1 * y1 - sc.a2 * y2;
++        x2 = x1; x1 = v; y2 = y1; y1 = y; v = y;
++      }
++    }
++    for (int t = 0; t < cols; ++t) {out(r, t) = static_cast<float>(x[static_cast<size_t>(t + kWarm)]);}
++  }
++  double sum = 0, sum2 = 0;
++  for (int r = 0; r < rows; ++r) {
++    for (int t = 0; t < cols; ++t) {sum += out(r, t); sum2 += double(out(r, t)) * out(r, t);}
++  }
++  const double cnt = std::max(1.0, double(rows) * cols);
++  const float sd = static_cast<float>(std::sqrt(std::max(0.0, sum2 / cnt - (sum / cnt) * (sum / cnt))));
++  noise = sd > 0.0f ? (out * (std / sd)).eval() : out;
++}
++
+ void NoiseGenerator::generateNoisedControls()
+ {
+   auto & s = settings_;
++  const int extra = lowpass_cutoff_ > 0.0f ? 40 : 0;
++  const int rows = noise_bank_rows_ > 0 && !regenerate_noises_ ?
++    std::max(noise_bank_rows_, static_cast<int>(s.batch_size)) : static_cast<int>(s.batch_size);
+   noises_vx_ = Eigen::ArrayXXf::NullaryExpr(
+-    s.batch_size, s.time_steps, [&]() {return ndistribution_vx_(generator_);});
++    rows, s.time_steps + extra, [&]() {return ndistribution_vx_(generator_);});
+   noises_wz_ = Eigen::ArrayXXf::NullaryExpr(
+-    s.batch_size, s.time_steps, [&]() {return ndistribution_wz_(generator_);});
++    rows, s.time_steps + extra, [&]() {return ndistribution_wz_(generator_);});
+   if (is_holonomic_) {
+     noises_vy_ = Eigen::ArrayXXf::NullaryExpr(
+-      s.batch_size, s.time_steps, [&]() {return ndistribution_vy_(generator_);});
++      rows, s.time_steps + extra, [&]() {return ndistribution_vy_(generator_);});
++  }
++  if (extra) {
++    lowPassRows(noises_vx_, s.sampling_std.vx);
++    lowPassRows(noises_wz_, s.sampling_std.wz);
++    if (is_holonomic_) {lowPassRows(noises_vy_, s.sampling_std.vy);}
+   }
+ }
+ 
 diff --git a/nav2_mppi_controller/src/optimizer.cpp b/nav2_mppi_controller/src/optimizer.cpp
-index b2b18c0..240cda3 100644
+index b2b18c0..33526e3 100644
 --- a/nav2_mppi_controller/src/optimizer.cpp
 +++ b/nav2_mppi_controller/src/optimizer.cpp
 @@ -16,6 +16,7 @@
@@ -946,17 +1110,19 @@ index b2b18c0..240cda3 100644
  
  namespace mppi
  {
-@@ -145,6 +147,9 @@ void Optimizer::getParams()
+@@ -145,6 +147,11 @@ void Optimizer::getParams()
    getParam(s.model_delay_vy, "model_delay_vy", 0.0f);
    getParam(s.model_delay_wz, "model_delay_wz", 0.0f);
    getParam(s.clamp_raw_controls, "clamp_raw_controls", false);
 +  getParam(fuse_generation_, "fuse_generation", false);
 +  getParam(fuse_generation_registers_, "fuse_generation_registers", false);
 +  getParam(fast_reductions_, "fast_reductions", false);
++  getParam(bias_stop_sample_, "bias_stop_sample", false);
++  getParam(bias_plan_sample_, "bias_plan_sample", false);
    getParam(s.time_steps, "time_steps", 56);
    getParam(s.batch_size, "batch_size", 1000);
    getParam(s.iteration_count, "iteration_count", 1);
-@@ -388,6 +393,7 @@ void Optimizer::prepare(
+@@ -388,6 +395,7 @@ void Optimizer::prepare(
    critics_data_.fail_flag = false;
    critics_data_.goal_checker = goal_checker;
    critics_data_.motion_model = motion_model_;
@@ -964,10 +1130,22 @@ index b2b18c0..240cda3 100644
    critics_data_.furthest_reached_path_point.reset();
    critics_data_.path_pts_valid.reset();
  }
-@@ -411,10 +417,161 @@ void Optimizer::generateNoisedTrajectories()
+@@ -411,10 +419,173 @@ void Optimizer::generateNoisedTrajectories()
    applyControlSequenceInterIterationConstraints();
    noise_generator_.setNoisedControls(state_, control_sequence_);
    noise_generator_.generateNextNoises();
++  // Lab options (default off): ancillary samples as in Biased-MPPI (Trevisan, RA-L 2024) and
++  // DRA-MPPI: row 0 stops in place, row 1 is the current plan without noise.
++  if (bias_stop_sample_ && state_.cvx.rows() > 0) {
++    state_.cvx.row(0).setZero();
++    state_.cwz.row(0).setZero();
++    if (isHolonomic()) {state_.cvy.row(0).setZero();}
++  }
++  if (bias_plan_sample_ && state_.cvx.rows() > 1) {
++    state_.cvx.row(1) = control_sequence_.vx.transpose();
++    state_.cwz.row(1) = control_sequence_.wz.transpose();
++    if (isHolonomic()) {state_.cvy.row(1) = control_sequence_.vy.transpose();}
++  }
 +  if (fuse_generation_ && !isHolonomic() && motion_model_->hasNoModelDelay()) {
 +    constexpr Eigen::Index kPacket = Eigen::internal::unpacket_traits<
 +      Eigen::internal::packet_traits<float>::type>::size;
@@ -1126,7 +1304,7 @@ index b2b18c0..240cda3 100644
  void Optimizer::applyControlSequenceInterIterationConstraints()
  {
    // Enforce t=0 to be dynamically feasible from the current speed for inter-iteration feasibility
-@@ -657,16 +814,25 @@ void Optimizer::updateControlSequence()
+@@ -657,16 +828,25 @@ void Optimizer::updateControlSequence()
    const bool is_holo = isHolonomic();
    auto & s = settings_;
  
@@ -1162,7 +1340,7 @@ index b2b18c0..240cda3 100644
    }
  
    if (is_holo) {
-@@ -678,7 +844,8 @@ void Optimizer::updateControlSequence()
+@@ -678,7 +858,8 @@ void Optimizer::updateControlSequence()
  
    auto costs_normalized = costs_ - costs_.minCoeff();
    const float inv_temp = 1.0f / s.temperature;
