@@ -13,8 +13,10 @@
 // limitations under the License.
 
 // Closed-loop driving with the Nav2 MPPI optimizer: quality versus CPU.
-// A 0.7 x 0.5 m AMR follows a straight-ish global plan through five scenes (slalom in an aisle,
-// a box on the plan, a door, a box that appears ahead, an L-turn). The robot tracks the command
+// A 0.7 x 0.5 m AMR follows a straight-ish global plan through nine scenes (slalom in an aisle,
+// a box on the plan, a door, a box that appears ahead, an L-turn; 5-8 are tight versions: a 0.7 m
+// door, a zigzag with 0.8 m gaps, an L-turn in a 1.1 m corridor, a box appearing 1.0-1.3 m ahead).
+// The robot tracks the command
 // with the optimizer's acceleration limits. Collisions are checked on the exact geometry.
 //
 // Usage: closed_loop_benchmark batch lowpass_hz bias seed0 seeds scenes [stock]
@@ -22,7 +24,7 @@
 //   stock = 1 switches off all exact speedups (masks, fused generation, fast paths)
 // Environment: VX_MAX (default 0.5, the Nav2 default), LP_ORDER (default 2), TRACE=1 prints poses,
 //   LOCAL (rolling local costmap side in m, default 5; 0 = the whole 30 m map is the costmap),
-//   REGEN=1 (regenerate_noises), BANK=rows (noise bank), BANK_STEP=rows per cycle (0 = random block), TEMP=MPPI temperature, OFF="mask fuse reg fast pa" (switch single speedups off).
+//   REGEN=1 (regenerate_noises), BANK=rows (noise bank), BANK_STEP=rows per cycle (0 = random block), TEMP=MPPI temperature, P="name=value;..." (any optimizer parameter), OFF="mask fuse reg fast pa" (switch single speedups off).
 // Prints one JSON line per episode.
 
 #include <algorithm>
@@ -99,11 +101,43 @@ Scene makeScene(int id, unsigned seed)
       Rect{bx, cy - 1.2, bx + 0.5, cy - 1.2 + w};
     s.way = {{3, cy}, {25, cy}};
     s.sx = 3; s.sy = cy; s.syaw = 0;
-  } else {  // L-turn in a 1.6 m corridor
-    const double cx = 16.0 + U(-0.5, 0.5);
-    s.obs = {{2, cy + 0.8, cx - 0.8, cy + 0.85}, {2, cy - 0.85, cx + 0.8, cy - 0.8},
-      {cx + 0.8, cy - 0.85, cx + 0.85, 28}, {cx - 0.85, cy + 0.8, cx - 0.8, 28}};
+  } else if (id == 4 || id == 7) {  // L-turn in a corridor: 1.6 m (4) or a tight 1.1 m (7)
+    const double cx = 16.0 + U(-0.5, 0.5), h = id == 4 ? 0.8 : 0.55;
+    s.obs = {{2, cy + h, cx - h, cy + h + 0.05}, {2, cy - h - 0.05, cx + h, cy - h},
+      {cx + h, cy - h - 0.05, cx + h + 0.05, 28}, {cx - h - 0.05, cy + h, cx - h, 28}};
     s.way = {{3, cy}, {cx, cy}, {cx, 27}};
+    s.sx = 3; s.sy = cy; s.syaw = 0;
+  } else if (id == 5) {  // tight door: 0.7 m gap (0.1 m per side), approached at an angle
+    const double gy = cy + U(-0.4, 0.4);
+    s.obs = {{14, 2, 14.1, gy - 0.35}, {14, gy + 0.35, 14.1, 28}};
+    s.way = {{3, cy - 4}, {12.8, gy}, {15.3, gy}, {24, cy + 4}};
+    s.sx = 3; s.sy = cy - 4; s.syaw = std::atan2(gy - (cy - 4), 9.8);
+  } else if (id == 6) {  // zigzag: 2.0 m aisle, boxes alternate and leave 0.75-0.85 m gaps;
+    // the global plan goes through the middle of each gap, as a global planner would
+    s.obs = {{2, cy + 1.0, 28, cy + 1.05}, {2, cy - 1.05, 28, cy - 1.0}};
+    s.way = {{3, cy}};
+    double x = 6.0 + U(-0.5, 0.5);
+    for (int k = 0; k < 6; ++k) {
+      const double gap = U(0.75, 0.85), d = 2.0 - gap;
+      if (k % 2 == 0) {
+        s.obs.push_back({x, cy + 1.0 - d, x + 0.5, cy + 1.0});
+        s.way.push_back({x + 0.25, cy - 1.0 + gap / 2});
+      } else {
+        s.obs.push_back({x, cy - 1.0, x + 0.5, cy - 1.0 + d});
+        s.way.push_back({x + 0.25, cy + 1.0 - gap / 2});
+      }
+      x += U(2.6, 3.2);
+    }
+    s.way.push_back({27, cy});
+    s.sx = 3; s.sy = cy; s.syaw = 0;
+  } else {  // 8: a box appears only 1.0-1.3 m ahead in a 2.0 m aisle
+    s.obs = {{2, cy + 1.0, 28, cy + 1.05}, {2, cy - 1.05, 28, cy - 1.0}};
+    const double side = U(0, 1) < 0.5 ? 1.0 : -1.0, ahead = U(1.0, 1.3), w = U(0.8, 0.95);
+    s.drop_x = 9.0 + U(-1, 1);
+    const double bx = s.drop_x + ahead;
+    s.drop = side > 0 ? Rect{bx, cy + 1.0 - w, bx + 0.5, cy + 1.0} :
+      Rect{bx, cy - 1.0, bx + 0.5, cy - 1.0 + w};
+    s.way = {{3, cy}, {25, cy}};
     s.sx = 3; s.sy = cy; s.syaw = 0;
   }
   return s;
@@ -330,6 +364,26 @@ int main(int argc, char ** argv)
         {n + "fast_reductions", on("fast")}, {n + "PathAlignCritic.packet_evaluation", on("pa")},
       };
       if (temp > 0.0) {params.emplace_back(n + "temperature", temp);}
+      // P="vx_std=0.4;PathFollowCritic.offset_from_furthest=10": any optimizer parameter
+      // (a value with '.' is a double, true/false a bool, otherwise an int)
+      if (const char * pe = std::getenv("P")) {
+        std::string all = pe;
+        size_t a = 0;
+        while (a < all.size()) {
+          size_t b = all.find(';', a);
+          if (b == std::string::npos) {b = all.size();}
+          const std::string kv = all.substr(a, b - a);
+          const size_t e = kv.find('=');
+          if (e != std::string::npos) {
+            const std::string k = n + kv.substr(0, e), val = kv.substr(e + 1);
+            if (val == "true" || val == "false") {params.emplace_back(k, val == "true");} else if (
+              val.find('.') != std::string::npos) {params.emplace_back(k, std::atof(val.c_str()));} else {
+              params.emplace_back(k, std::atoi(val.c_str()));
+            }
+          }
+          a = b + 1;
+        }
+      }
       rclcpp::NodeOptions options;
       options.parameter_overrides(params);
       auto node = getDummyNode(options);
@@ -421,10 +475,10 @@ int main(int argc, char ** argv)
       for (double c : cpu) {mean += c;}
       mean /= std::max<size_t>(1, cpu.size());
       std::printf("{\"scene\": %d, \"seed\": %d, \"batch\": %d, \"lp\": %g, \"lp_order\": %d, "
-        "\"bias\": %d, \"stock\": %d, \"regen\": %d, \"bank\": %d, \"bank_step\": %d, \"temp\": %g, \"off\": \"%s\", \"local\": %d, \"noise_us\": %.1f, \"vx_max\": %g, \"status\": \"%s\", \"time\": %.2f, "
+        "\"bias\": %d, \"stock\": %d, \"regen\": %d, \"bank\": %d, \"bank_step\": %d, \"temp\": %g, \"p\": \"%s\", \"off\": \"%s\", \"local\": %d, \"noise_us\": %.1f, \"vx_max\": %g, \"status\": \"%s\", \"time\": %.2f, "
         "\"min_clear\": %.3f, \"len\": %.2f, \"novalid\": %d, \"dv_rms\": %.4f, \"dw_rms\": %.4f, "
         "\"cpu_med\": %.1f, \"cpu_mean\": %.1f, \"cpu_p95\": %.1f, \"cycles\": %d}\n",
-        id, seed, batch, lp, lp_order, bias, stock ? 1 : 0, regen ? 1 : 0, bank, bank_step, temp > 0.0 ? temp : 0.3, off.c_str(), local_m, noise_us, vx_max, status.c_str(), t, min_clear,
+        id, seed, batch, lp, lp_order, bias, stock ? 1 : 0, regen ? 1 : 0, bank, bank_step, temp > 0.0 ? temp : 0.3, std::getenv("P") ? std::getenv("P") : "", off.c_str(), local_m, noise_us, vx_max, status.c_str(), t, min_clear,
         len, novalid, std::sqrt(sum_dv2 / std::max(1, cycles)),
         std::sqrt(sum_dw2 / std::max(1, cycles)), cpu.at(cpu.size() / 2), mean,
         cpu.at(cpu.size() * 95 / 100), cycles);
