@@ -3,7 +3,7 @@
 
   uv run --with scipy python make_qmc_bank.py OUT_DIR [rows] [T] [seed]
 
-Writes sobol_SEED.bin (scrambled Sobol, Owen scrambling), halton_SEED.bin (scrambled Halton) and
+Writes sobol_SEED.bin (scrambled Sobol, SciPy LMS + digital shift), halton_SEED.bin (scrambled Halton) and
 gauss_SEED.bin (pseudo-random normal, the control that goes through the same loading path).
 Uniform points are mapped through the inverse normal CDF, as in Halton-MPPI (eq. 11).
 """
