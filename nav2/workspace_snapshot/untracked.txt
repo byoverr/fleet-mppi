@@ -16,3 +16,5 @@ nav2_mppi_controller/benchmark/sincos_equivalence.cpp
 nav2_mppi_controller/include/nav2_mppi_controller/tools/footprint_bitmask.hpp
 nav2_mppi_controller/include/nav2_mppi_controller/tools/footprint_bitmask_v2.hpp
 nav2_mppi_controller/include/nav2_mppi_controller/tools/sincos_packet.hpp
+nav2_mppi_controller/include/nav2_mppi_controller/tools/sobol_bank.hpp
+nav2_mppi_controller/include/nav2_mppi_controller/tools/sobol_joe_kuo.hpp
