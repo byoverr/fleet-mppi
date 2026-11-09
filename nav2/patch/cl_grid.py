@@ -24,6 +24,7 @@ REGIMES = {  # name: (vx_max, own params, scenes) -- as in cl_hard.sh
 
 def key(r):
     return (r["vx_max"], r.get("bank", 0), r.get("regen", 0), r.get("temp", 0.3), r.get("p", ""),
+            r.get("bank_file", ""),
             r["batch"], r["scene"], r["seed"])
 
 
@@ -42,7 +43,7 @@ for reg in regimes.split():
             for sc in scenes:
                 for s in range(int(seed0), int(seed0) + int(seeds)):
                     kk = (float(vx), int(e.get("BANK", 0)), int(e.get("REGEN", 0)),
-                          float(e.get("TEMP", 0.3)), p, int(k), int(sc), s)
+                          float(e.get("TEMP", 0.3)), p, e.get("BANK_FILE", ""), int(k), int(sc), s)
                     if kk in done:
                         continue
                     pe = f'P="{p}"' if p else ""

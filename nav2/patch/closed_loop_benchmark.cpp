@@ -364,6 +364,14 @@ int main(int argc, char ** argv)
         {n + "fast_reductions", on("fast")}, {n + "PathAlignCritic.packet_evaluation", on("pa")},
       };
       if (temp > 0.0) {params.emplace_back(n + "temperature", temp);}
+      // BANK_FILE=/path: fill the noise bank from a file (needs BANK > 0), see noise_generator.hpp
+      // A "%d" in the path is replaced by the seed, so every seed gets its own scrambled bank.
+      const char * bank_file = std::getenv("BANK_FILE");
+      if (bank_file) {
+        char path[512];
+        std::snprintf(path, sizeof(path), bank_file, seed);
+        params.emplace_back(n + "noise_bank_file", std::string(path));
+      }
       // P="vx_std=0.4;PathFollowCritic.offset_from_furthest=10": any optimizer parameter
       // (a value with '.' is a double, true/false a bool, otherwise an int)
       if (const char * pe = std::getenv("P")) {
@@ -401,6 +409,7 @@ int main(int argc, char ** argv)
       const double prune = std::max(2.0, 1.2 * vx_max * 56 * 0.05);
       bool dropped = false;
       std::string status = "timeout";
+      std::vector<float> ess;
       double min_clear = 1e9, len = 0, sum_dw2 = 0, sum_dv2 = 0, prev_cv = 0, prev_cw = 0;
       int novalid = 0, cycles = 0;
       std::vector<double> cpu;
@@ -441,6 +450,7 @@ int main(int argc, char ** argv)
           auto [cmd, traj] = optimizer->evalControl(pose, vel, path, goal, nullptr);
           cv = cmd.twist.linear.x;
           cw = cmd.twist.angular.z;
+          ess.push_back(optimizer->getLastEss());
         } catch (const nav2_core::NoValidControl &) {
           ++novalid;  // the controller server would stop and retry; we stop for one period
         }
@@ -471,17 +481,26 @@ int main(int argc, char ** argv)
       }
       optimizer->shutdown();
       std::sort(cpu.begin(), cpu.end());
+      std::sort(ess.begin(), ess.end());
+      double ess_mean = 0, ess_lt2 = 0;
+      for (float e : ess) {ess_mean += e; ess_lt2 += e < 2.0f;}
+      ess_mean /= std::max<size_t>(1, ess.size());
+      ess_lt2 /= std::max<size_t>(1, ess.size());
+      const double ess_med = ess.empty() ? 0.0 : ess[ess.size() / 2];
+      const double ess_p10 = ess.empty() ? 0.0 : ess[ess.size() / 10];
       double mean = 0;
       for (double c : cpu) {mean += c;}
       mean /= std::max<size_t>(1, cpu.size());
       std::printf("{\"scene\": %d, \"seed\": %d, \"batch\": %d, \"lp\": %g, \"lp_order\": %d, "
         "\"bias\": %d, \"stock\": %d, \"regen\": %d, \"bank\": %d, \"bank_step\": %d, \"temp\": %g, \"p\": \"%s\", \"off\": \"%s\", \"local\": %d, \"noise_us\": %.1f, \"vx_max\": %g, \"status\": \"%s\", \"time\": %.2f, "
         "\"min_clear\": %.3f, \"len\": %.2f, \"novalid\": %d, \"dv_rms\": %.4f, \"dw_rms\": %.4f, "
-        "\"cpu_med\": %.1f, \"cpu_mean\": %.1f, \"cpu_p95\": %.1f, \"cycles\": %d}\n",
+        "\"cpu_med\": %.1f, \"cpu_mean\": %.1f, \"cpu_p95\": %.1f, \"cycles\": %d, "
+        "\"ess_med\": %.2f, \"ess_p10\": %.2f, \"ess_mean\": %.2f, \"ess_lt2\": %.3f, \"bank_file\": \"%s\"}\n",
         id, seed, batch, lp, lp_order, bias, stock ? 1 : 0, regen ? 1 : 0, bank, bank_step, temp > 0.0 ? temp : 0.3, std::getenv("P") ? std::getenv("P") : "", off.c_str(), local_m, noise_us, vx_max, status.c_str(), t, min_clear,
         len, novalid, std::sqrt(sum_dv2 / std::max(1, cycles)),
         std::sqrt(sum_dw2 / std::max(1, cycles)), cpu.at(cpu.size() / 2), mean,
-        cpu.at(cpu.size() * 95 / 100), cycles);
+        cpu.at(cpu.size() * 95 / 100), cycles, ess_med, ess_p10, ess_mean, ess_lt2,
+        bank_file ? bank_file : "");
       std::fflush(stdout);
     }
   }

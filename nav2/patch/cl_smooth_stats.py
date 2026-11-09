@@ -32,7 +32,9 @@ def regime(r):
 
 def option(r):
     p = ";".join(x for x in r.get("p", "").split(";") if x and not x.startswith("vx_std="))
-    v = "fresh" if r.get("regen") else (f"bank" if r.get("bank") else "MPPI")
+    f = r.get("bank_file", "")
+    bank = f"bank {f.rsplit('/', 1)[-1].split('_')[0]}" if f else "bank"
+    v = "fresh" if r.get("regen") else (bank if r.get("bank") else "MPPI")
     return f"{v} {p}".strip()
 
 
