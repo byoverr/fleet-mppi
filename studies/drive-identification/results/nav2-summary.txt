@@ -1,0 +1,24 @@
+1 0 ws_main
+fp=amr robots=8 workers=1 bitmask=0 cc_threads=1 wall_share=0.00 batch=2000 fuse=0 cycles/s=1279.2 robots@20Hz=64.0 p50_ms=0.77 p99_ms=1.04 max_ms=7.49 cpu_ms_per_cycle=0.78 cpu_cores_busy=1.00
+1 0 ws
+fp=amr robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=0.00 batch=2000 fuse=5 cycles/s=1684.0 robots@20Hz=84.2 p50_ms=0.58 p99_ms=0.75 max_ms=2.90 cpu_ms_per_cycle=0.59 cpu_cores_busy=1.00
+1 1 ws_main
+fp=amr robots=8 workers=1 bitmask=0 cc_threads=1 wall_share=1.00 batch=2000 fuse=0 cycles/s=653.9 robots@20Hz=32.7 p50_ms=1.64 p99_ms=1.78 max_ms=1.89 cpu_ms_per_cycle=1.53 cpu_cores_busy=1.00
+1 1 ws
+fp=amr robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=1.00 batch=2000 fuse=5 cycles/s=1522.0 robots@20Hz=76.1 p50_ms=0.63 p99_ms=1.20 max_ms=4.14 cpu_ms_per_cycle=0.66 cpu_cores_busy=1.00
+2 0 ws
+fp=amr robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=0.00 batch=2000 fuse=5 cycles/s=1701.2 robots@20Hz=85.1 p50_ms=0.58 p99_ms=0.69 max_ms=4.10 cpu_ms_per_cycle=0.59 cpu_cores_busy=1.00
+2 0 ws_main
+fp=amr robots=8 workers=1 bitmask=0 cc_threads=1 wall_share=0.00 batch=2000 fuse=0 cycles/s=1209.1 robots@20Hz=60.5 p50_ms=0.79 p99_ms=1.94 max_ms=6.99 cpu_ms_per_cycle=0.83 cpu_cores_busy=1.00
+2 1 ws
+fp=amr robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=1.00 batch=2000 fuse=5 cycles/s=1579.3 robots@20Hz=79.0 p50_ms=0.63 p99_ms=0.77 max_ms=1.48 cpu_ms_per_cycle=0.63 cpu_cores_busy=1.00
+2 1 ws_main
+fp=amr robots=8 workers=1 bitmask=0 cc_threads=1 wall_share=1.00 batch=2000 fuse=0 cycles/s=649.9 robots@20Hz=32.5 p50_ms=1.65 p99_ms=1.77 max_ms=2.12 cpu_ms_per_cycle=1.54 cpu_cores_busy=1.00
+3 0 ws_main
+fp=amr robots=8 workers=1 bitmask=0 cc_threads=1 wall_share=0.00 batch=2000 fuse=0 cycles/s=1258.2 robots@20Hz=62.9 p50_ms=0.80 p99_ms=0.90 max_ms=1.23 cpu_ms_per_cycle=0.79 cpu_cores_busy=1.00
+3 0 ws
+fp=amr robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=0.00 batch=2000 fuse=5 cycles/s=1493.2 robots@20Hz=74.7 p50_ms=0.67 p99_ms=0.85 max_ms=1.92 cpu_ms_per_cycle=0.67 cpu_cores_busy=1.00
+3 1 ws_main
+fp=amr robots=8 workers=1 bitmask=0 cc_threads=1 wall_share=1.00 batch=2000 fuse=0 cycles/s=657.0 robots@20Hz=32.8 p50_ms=1.64 p99_ms=1.81 max_ms=2.09 cpu_ms_per_cycle=1.52 cpu_cores_busy=1.00
+3 1 ws
+fp=amr robots=8 workers=1 bitmask=1 cc_threads=1 wall_share=1.00 batch=2000 fuse=5 cycles/s=1512.8 robots@20Hz=75.6 p50_ms=0.66 p99_ms=0.82 max_ms=1.12 cpu_ms_per_cycle=0.66 cpu_cores_busy=1.00

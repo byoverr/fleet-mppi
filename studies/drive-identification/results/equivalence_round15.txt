@@ -1,0 +1,14 @@
+== cost_critic_equivalence, exact footprint vs masks
+trajectories checked 360000, colliding 154168, all-colliding batches 230, cost mismatches 0, fail_flag mismatches 0
+== CC_EQ_FAST=1: masks vs masks + fast_cost_reads
+trajectories checked 360000, colliding 154168, all-colliding batches 230, cost mismatches 0, fail_flag mismatches 0
+== FP=big CostCritic.fast_cost_reads
+TOTAL CostCritic.fast_cost_reads: mismatches=0 over 3840 cycles, 233461760 trajectory points
+== FP=big PathAlignCritic.packet_evaluation
+TOTAL PathAlignCritic.packet_evaluation: mismatches=0 over 3840 cycles, 233461760 trajectory points
+== FP=amr CostCritic.fast_cost_reads
+TOTAL CostCritic.fast_cost_reads: mismatches=0 over 3840 cycles, 233461760 trajectory points
+== FP=amr PathAlignCritic.packet_evaluation
+TOTAL PathAlignCritic.packet_evaluation: mismatches=0 over 3840 cycles, 233461760 trajectory points
+== gen_equivalence (fused generation + registers + fast reductions)
+TOTAL mismatches=0 over 23607360 trajectory points x 8 arrays
