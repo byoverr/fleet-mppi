@@ -1,0 +1,593 @@
+diff --git a/nav2_mppi_controller/CMakeLists.txt b/nav2_mppi_controller/CMakeLists.txt
+index e32b3fa..4be5105 100644
+--- a/nav2_mppi_controller/CMakeLists.txt
++++ b/nav2_mppi_controller/CMakeLists.txt
+@@ -180,6 +180,11 @@ install(DIRECTORY include/
+   DESTINATION include/${PROJECT_NAME}
+ )
+ 
++option(FLEET_MPPI_BENCHMARKS "Build Fleet MPPI comparison tools" OFF)
++if(FLEET_MPPI_BENCHMARKS)
++  add_subdirectory(fleet_benchmark)
++endif()
++
+ if(BUILD_TESTING)
+   find_package(ament_lint_auto REQUIRED)
+   find_package(ament_cmake_gtest REQUIRED)
+diff --git a/nav2_mppi_controller/fleet_benchmark/CMakeLists.txt b/nav2_mppi_controller/fleet_benchmark/CMakeLists.txt
+new file mode 100644
+index 0000000..97df90f
+--- /dev/null
++++ b/nav2_mppi_controller/fleet_benchmark/CMakeLists.txt
+@@ -0,0 +1,25 @@
++find_package(benchmark REQUIRED)
++
++set(BENCHMARK_NAMES
++  fleet_cost_critic
++  fleet_cost_equivalence
++)
++
++foreach(name IN LISTS BENCHMARK_NAMES)
++  add_executable(${name}
++    ${name}.cpp
++  )
++  target_link_libraries(${name}
++    benchmark
++    geometry_msgs::geometry_msgs
++    mppi_controller
++    mppi_critics
++    nav2_core::nav2_core
++    nav2_costmap_2d::nav2_costmap_2d_core
++    nav_msgs::nav_msgs
++  )
++
++  target_include_directories(${name} PRIVATE
++    ${PROJECT_SOURCE_DIR}/test/utils
++  )
++endforeach()
+diff --git a/nav2_mppi_controller/fleet_benchmark/fleet_cost_critic.cpp b/nav2_mppi_controller/fleet_benchmark/fleet_cost_critic.cpp
+new file mode 100644
+index 0000000..859d588
+--- /dev/null
++++ b/nav2_mppi_controller/fleet_benchmark/fleet_cost_critic.cpp
+@@ -0,0 +1,308 @@
++// Copyright (c) 2026 enway GmbH
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++#include <benchmark/benchmark.h>
++
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <memory>
++#include <random>
++#include <string>
++#include <vector>
++
++#include <nav2_costmap_2d/cost_values.hpp>
++#include <nav2_costmap_2d/costmap_2d_ros.hpp>
++#include <nav2_costmap_2d/footprint_collision_checker.hpp>
++#include <nav2_costmap_2d/inflation_layer_interface.hpp>
++
++#include "nav2_mppi_controller/critic_data.hpp"
++#include "nav2_mppi_controller/critics/cost_critic.hpp"
++#include "nav2_mppi_controller/models/path.hpp"
++#include "nav2_mppi_controller/models/state.hpp"
++#include "nav2_mppi_controller/models/trajectories.hpp"
++#include "nav2_mppi_controller/tools/parameters_handler.hpp"
++
++// Standalone CostCritic benchmark using the robot's nav2_params.yaml values:
++// 30x30 m local costmap at 0.1 m, padded footprint, inflation radius 5.0 / scaling 0.7,
++// variable batch size, time_steps 100, model_dt 0.05, trajectory_point_step 2.
++// Scenes:
++//   0 corridor: walls 3 m to each side and a box narrowing the left side, so trajectories
++//     mix inflated cost, footprint checks and collisions.
++//   1 wall: the robot drives close along a single wall, so nearly every pose needs a
++//     footprint check (matches field measurements of ~90% footprint checks per lookup).
++
++namespace
++{
++
++constexpr int kTimeSteps = 100;
++constexpr float kModelDt = 0.05f;
++constexpr double kResolution = 0.1;
++constexpr double kRobotX = 12.0;
++constexpr double kRobotY = 15.0;
++constexpr double kWallDistance = 1.7;
++constexpr float kWallWzBiasStd = 0.03f;
++
++std::shared_ptr<nav2_costmap_2d::Costmap2DROS> makeCostmapRos()
++{
++  rclcpp::NodeOptions options;
++  options.parameter_overrides({
++    {"width", 30},
++    {"height", 30},
++    {"resolution", kResolution},
++    {"footprint", "[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]"},
++    {"footprint_padding", 0.1},
++    {"plugins", std::vector<std::string>{"inflation_layer"}},
++    {"inflation_layer.plugin", "nav2_costmap_2d::InflationLayer"},
++    {"inflation_layer.inflation_radius", 5.0},
++    {"inflation_layer.cost_scaling_factor", 0.7},
++  });
++  auto costmap_ros = std::make_shared<nav2_costmap_2d::Costmap2DROS>(options);
++  costmap_ros->on_configure(rclcpp_lifecycle::State{});
++
++  // Plugins are added after the initial resize, so resize again to let the
++  // inflation layer pick up the resolution.
++  auto * costmap = costmap_ros->getCostmap();
++  costmap_ros->getLayeredCostmap()->resizeMap(
++    costmap->getSizeInCellsX(), costmap->getSizeInCellsY(), kResolution, 0.0, 0.0);
++  return costmap_ros;
++}
++
++void fillScene(std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros, int scene)
++{
++  auto * costmap = costmap_ros->getCostmap();
++  auto inflation = nav2_costmap_2d::InflationLayerInterface::getInflationLayer(
++    costmap_ros, "inflation_layer");
++
++  std::vector<std::pair<int, int>> obstacles;
++  auto addRect = [&](double x0, double y0, double x1, double y1) {
++      for (double x = x0; x <= x1; x += kResolution) {
++        for (double y = y0; y <= y1; y += kResolution) {
++          unsigned int mx, my;
++          if (costmap->worldToMap(x, y, mx, my)) {
++            obstacles.emplace_back(mx, my);
++          }
++        }
++      }
++    };
++  if (scene == 0) {
++    // Corridor walls 3 m left and right of the robot centre line
++    addRect(8.0, kRobotY + 3.0, 28.0, kRobotY + 3.0);
++    addRect(8.0, kRobotY - 3.0, 28.0, kRobotY - 3.0);
++    // Box narrowing the left side of the corridor; straight trajectories just pass it
++    addRect(19.0, kRobotY + 0.9, 19.6, kRobotY + 3.0);
++  } else {
++    // Single wall left of the robot centre line
++    addRect(8.0, kRobotY + kWallDistance, 28.0, kRobotY + kWallDistance);
++  }
++
++  const int radius_cells = static_cast<int>(inflation->getInflationRadius() / kResolution);
++  const int size_x = static_cast<int>(costmap->getSizeInCellsX());
++  const int size_y = static_cast<int>(costmap->getSizeInCellsY());
++  for (const auto & [ox, oy] : obstacles) {
++    for (int x = std::max(0, ox - radius_cells); x < std::min(size_x, ox + radius_cells + 1);
++      ++x)
++    {
++      for (int y = std::max(0, oy - radius_cells); y < std::min(size_y, oy + radius_cells + 1);
++        ++y)
++      {
++        const double dist = std::hypot(x - ox, y - oy);
++        if (dist > radius_cells) {
++          continue;
++        }
++        const unsigned char cost = inflation->computeCost(dist);
++        if (cost > costmap->getCost(x, y)) {
++          costmap->setCost(x, y, cost);
++        }
++      }
++    }
++  }
++}
++
++// MPPI-like rollouts: nominal forward motion plus per-step Gaussian noise, with a
++// per-trajectory curvature bias so the batch fans out across the corridor.
++void fillTrajectories(mppi::models::Trajectories & trajectories, float wz_bias_std, int batch_size)
++{
++  trajectories.reset(batch_size, kTimeSteps);
++  std::mt19937 rng(42);
++  std::normal_distribution<float> vx_noise(0.0f, 0.2f);
++  std::normal_distribution<float> wz_noise(0.0f, 0.6f);
++  std::normal_distribution<float> wz_bias(0.0f, wz_bias_std);
++  constexpr float kVxMax = 1.67f;
++  constexpr float kWzMax = 0.8534f;
++
++  for (int i = 0; i < trajectories.x.rows(); ++i) {
++    float x = static_cast<float>(kRobotX);
++    float y = static_cast<float>(kRobotY);
++    float yaw = 0.0f;
++    const float bias = wz_bias(rng);
++    for (int j = 0; j < kTimeSteps; ++j) {
++      const float vx = std::clamp(1.2f + vx_noise(rng), 0.0f, kVxMax);
++      const float wz = std::clamp(bias + wz_noise(rng), -kWzMax, kWzMax);
++      yaw += wz * kModelDt;
++      x += vx * std::cos(yaw) * kModelDt;
++      y += vx * std::sin(yaw) * kModelDt;
++      trajectories.x(i, j) = x;
++      trajectories.y(i, j) = y;
++      trajectories.yaws(i, j) = yaw;
++    }
++  }
++}
++
++struct WorkCounts
++{
++  double centre_lookups{0};
++  double non_free_poses{0};
++  double footprint_checks{0};
++};
++
++// Replays CostCritic::score() single-threaded and counts the work per call:
++// centre-cost lookups, poses with non-zero cost, and full footprint checks.
++WorkCounts countWork(
++  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros,
++  const mppi::models::Trajectories & trajectories, int point_step)
++{
++  auto * costmap = costmap_ros->getCostmap();
++  auto inflation = nav2_costmap_2d::InflationLayerInterface::getInflationLayer(
++    costmap_ros, "inflation_layer");
++  const float possible_collision_cost = static_cast<float>(inflation->computeCost(
++      costmap_ros->getLayeredCostmap()->getCircumscribedRadius() / kResolution));
++  const auto footprint = costmap_ros->getRobotFootprint();
++  nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *> checker(costmap);
++
++  WorkCounts counts;
++  for (int i = 0; i < trajectories.x.rows(); ++i) {
++    for (int j = (kTimeSteps - 1) / point_step * point_step; j >= 0; j -= point_step) {
++      counts.centre_lookups++;
++      unsigned int mx, my;
++      float cost = 255.0f;
++      if (costmap->worldToMap(trajectories.x(i, j), trajectories.y(i, j), mx, my)) {
++        cost = costmap->getCost(mx, my);
++        if (cost < 1.0f) {
++          continue;
++        }
++      }
++      counts.non_free_poses++;
++      if (cost == nav2_costmap_2d::LETHAL_OBSTACLE ||
++        cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
++      {
++        break;
++      }
++      float score_cost = cost;
++      if (cost >= possible_collision_cost || possible_collision_cost < 1.0f) {
++        counts.footprint_checks++;
++        score_cost = static_cast<float>(checker.footprintCostAtPose(
++            trajectories.x(i, j), trajectories.y(i, j), trajectories.yaws(i, j), footprint));
++      }
++      if (score_cost == nav2_costmap_2d::LETHAL_OBSTACLE ||
++        score_cost == nav2_costmap_2d::NO_INFORMATION)
++      {
++        break;
++      }
++    }
++  }
++  return counts;
++}
++
++double percentile(std::vector<double> samples, double p)
++{
++  const size_t k = static_cast<size_t>(p * static_cast<double>(samples.size() - 1));
++  std::nth_element(samples.begin(), samples.begin() + k, samples.end());
++  return samples[k];
++}
++
++}  // namespace
++
++static void BM_CostCritic(benchmark::State & state)
++{
++  const int num_threads = static_cast<int>(state.range(0));
++  const int scene = static_cast<int>(state.range(1));
++
++  const bool mask = state.range(2) != 0;
++  const int batch_size = static_cast<int>(state.range(3));
++  auto costmap_ros = makeCostmapRos();
++  fillScene(costmap_ros, scene);
++
++  rclcpp::NodeOptions options;
++  options.parameter_overrides({
++    {"CostCritic.consider_footprint", true},
++    {"CostCritic.cost_power", 1},
++    {"CostCritic.cost_weight", 3.81},
++    {"CostCritic.collision_cost", 1000000.0},
++    {"CostCritic.critical_cost", 300.0},
++    {"CostCritic.near_collision_cost", 253},
++    {"CostCritic.near_goal_distance", 1.0},
++    {"CostCritic.trajectory_point_step", 2},
++    {"CostCritic.inflation_layer_name", "inflation_layer"},
++    {"CostCritic.num_threads", num_threads},
++    {"CostCritic.use_footprint_bitmask", mask},
++  });
++  auto node = std::make_shared<nav2::LifecycleNode>("cost_critic_benchmark", options);
++  std::string name = "mppi";
++  mppi::ParametersHandler param_handler(node, name);
++
++  mppi::critics::CostCritic critic;
++  critic.on_configure(node, "mppi", "CostCritic", costmap_ros, &param_handler);
++
++  mppi::models::State robot_state;
++  robot_state.local_path_length = 10.0f;
++  mppi::models::Trajectories trajectories;
++  // Following a wall, the sampled trajectories fan out less than in open space
++  fillTrajectories(trajectories, scene == 0 ? 0.08f : kWallWzBiasStd, batch_size);
++  mppi::models::Path path;
++  geometry_msgs::msg::Pose goal;
++  Eigen::ArrayXf costs = Eigen::ArrayXf::Zero(batch_size);
++  float model_dt = kModelDt;
++  mppi::CriticData data =
++  {robot_state, trajectories, path, goal, costs, model_dt,
++    false, nullptr, nullptr, std::nullopt, std::nullopt, {}};
++
++  critic.score(data);  // Warm caches and, when enabled, build the fixed footprint masks.
++  std::vector<double> samples_us;
++  for (auto _ : state) {
++    costs.setZero();
++    const auto start = std::chrono::steady_clock::now();
++    critic.score(data);
++    const auto end = std::chrono::steady_clock::now();
++    samples_us.push_back(std::chrono::duration<double, std::micro>(end - start).count());
++    benchmark::DoNotOptimize(costs.data());
++  }
++
++  state.counters["p50_us"] = percentile(samples_us, 0.50);
++  state.counters["p95_us"] = percentile(samples_us, 0.95);
++  state.counters["p99_us"] = percentile(samples_us, 0.99);
++  state.counters["max_us"] = *std::max_element(samples_us.begin(), samples_us.end());
++  // A collision adds collision_cost * weight / strided_cols = 300, a free trajectory at most 4.5
++  state.counters["colliding"] = static_cast<double>((costs > 100.0f).count());
++  const auto work = countWork(costmap_ros, trajectories, 2);
++  state.counters["lookups"] = work.centre_lookups;
++  state.counters["non_free"] = work.non_free_poses;
++  state.counters["fp_checks"] = work.footprint_checks;
++  state.counters["fp_ratio"] = work.footprint_checks / work.centre_lookups;
++}
++
++BENCHMARK(BM_CostCritic)->ArgNames({"threads", "scene", "mask", "K"})
++->ArgsProduct({{1}, {0, 1}, {0, 1}, {32, 125, 2000}})
++->Unit(benchmark::kMicrosecond)->UseRealTime()->MeasureProcessCPUTime();
++
++int main(int argc, char ** argv)
++{
++  // rclcpp is shut down explicitly here: from a static destructor it aborts inside rmw_zenoh
++  rclcpp::init(argc, argv);
++  benchmark::Initialize(&argc, argv);
++  benchmark::RunSpecifiedBenchmarks();
++  benchmark::Shutdown();
++  rclcpp::shutdown();
++  return 0;
++}
+diff --git a/nav2_mppi_controller/fleet_benchmark/fleet_cost_equivalence.cpp b/nav2_mppi_controller/fleet_benchmark/fleet_cost_equivalence.cpp
+new file mode 100644
+index 0000000..660d354
+--- /dev/null
++++ b/nav2_mppi_controller/fleet_benchmark/fleet_cost_equivalence.cpp
+@@ -0,0 +1,226 @@
++// Copyright (c) 2026 Sergey Shchetinkin
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++// CostCritic with and without the footprint bitmask must produce bit-identical costs and the
++// same fail flag on random scenes, footprints, resolutions and trajectory batches.
++
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <random>
++#include <string>
++#include <vector>
++
++#include <nav2_costmap_2d/costmap_2d_ros.hpp>
++#include <nav2_costmap_2d/inflation_layer_interface.hpp>
++
++#include "nav2_mppi_controller/critic_data.hpp"
++#include "nav2_mppi_controller/critics/cost_critic.hpp"
++#include "nav2_mppi_controller/models/path.hpp"
++#include "nav2_mppi_controller/models/state.hpp"
++#include "nav2_mppi_controller/models/trajectories.hpp"
++#include "nav2_mppi_controller/tools/parameters_handler.hpp"
++
++namespace
++{
++
++struct Case
++{
++  const char * footprint;
++  double resolution;
++  double inflation;
++  bool track_unknown;
++};
++
++std::shared_ptr<nav2_costmap_2d::Costmap2DROS> makeCostmap(const Case & c, int id)
++{
++  rclcpp::NodeOptions options;
++  options.parameter_overrides({
++    {"width", 20}, {"height", 20}, {"resolution", c.resolution},
++    {"footprint", c.footprint}, {"footprint_padding", 0.05},
++    {"track_unknown_space", c.track_unknown},
++    {"plugins", std::vector<std::string>{"inflation_layer"}},
++    {"inflation_layer.plugin", "nav2_costmap_2d::InflationLayer"},
++    {"inflation_layer.inflation_radius", c.inflation},
++    {"inflation_layer.cost_scaling_factor", 1.5},
++  });
++  (void)id;
++  auto ros = std::make_shared<nav2_costmap_2d::Costmap2DROS>(options);
++  ros->on_configure(rclcpp_lifecycle::State{});
++  auto * cm = ros->getCostmap();
++  ros->getLayeredCostmap()->resizeMap(
++    cm->getSizeInCellsX(), cm->getSizeInCellsY(), c.resolution, 0.0, 0.0);
++  return ros;
++}
++
++// random clutter: walls, boxes and single-cell posts (posts can hide inside a footprint)
++void fillRandom(std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros, std::mt19937 & rng)
++{
++  auto * cm = ros->getCostmap();
++  cm->resetMap(0, 0, cm->getSizeInCellsX(), cm->getSizeInCellsY());
++  const bool tracking = ros->getLayeredCostmap()->isTrackingUnknown();
++  if (tracking) {
++    // tracked unknown space: free map with large unknown patches
++    for (unsigned int k = 0; k < cm->getSizeInCellsX() * cm->getSizeInCellsY(); ++k) {
++      cm->getCharMap()[k] = 0;
++    }
++    std::uniform_real_distribution<double> up(1.0, 17.0), ul(0.3, 3.0);
++    for (int k = 0; k < 4; ++k) {
++      const double x = up(rng), y = up(rng), w = ul(rng), h = ul(rng);
++      for (double px = x; px <= x + w; px += cm->getResolution()) {
++        for (double py = y; py <= y + h; py += cm->getResolution()) {
++          unsigned int mx, my;
++          if (cm->worldToMap(px, py, mx, my)) {cm->setCost(mx, my, 255);}
++        }
++      }
++    }
++  }
++  auto inflation = nav2_costmap_2d::InflationLayerInterface::getInflationLayer(
++    ros, "inflation_layer");
++  const double res = cm->getResolution();
++  std::uniform_real_distribution<double> ux(1.0, 19.0), us(0.05, 2.5);
++  std::vector<std::pair<int, int>> obs;
++  auto rect = [&](double x0, double y0, double x1, double y1) {
++      for (double x = x0; x <= x1; x += res) {
++        for (double y = y0; y <= y1; y += res) {
++          unsigned int mx, my;
++          if (cm->worldToMap(x, y, mx, my)) {obs.emplace_back(mx, my);}
++        }
++      }
++    };
++  std::uniform_int_distribution<int> n_obj(3, 25);
++  for (int k = n_obj(rng); k > 0; --k) {
++    const double x = ux(rng), y = ux(rng);
++    rect(x, y, x + us(rng) * (k % 3 == 0 ? 0.05 : 1.0), y + us(rng) * (k % 3 == 1 ? 0.05 : 1.0));
++  }
++  // a few unknown cells too
++  for (int k = 0; k < 5; ++k) {
++    unsigned int mx, my;
++    if (cm->worldToMap(ux(rng), ux(rng), mx, my)) {cm->setCost(mx, my, 255);}
++  }
++  const int rc = static_cast<int>(inflation->getInflationRadius() / res);
++  const int sx = cm->getSizeInCellsX(), sy = cm->getSizeInCellsY();
++  for (auto [ox, oy] : obs) {
++    for (int x = std::max(0, ox - rc); x < std::min(sx, ox + rc + 1); ++x) {
++      for (int y = std::max(0, oy - rc); y < std::min(sy, oy + rc + 1); ++y) {
++        const double d = std::hypot(x - ox, y - oy);
++        if (d > rc) {continue;}
++        const unsigned char cost = inflation->computeCost(d);
++        if (cm->getCost(x, y) != 255 && cost > cm->getCost(x, y)) {cm->setCost(x, y, cost);}
++      }
++    }
++  }
++}
++
++void fillTrajectories(mppi::models::Trajectories & t, int batch, int steps, std::mt19937 & rng)
++{
++  t.reset(batch, steps);
++  std::uniform_real_distribution<float> u01(0.0f, 1.0f);
++  std::normal_distribution<float> vx(1.0f, 0.4f), wz(0.0f, 0.8f);
++  const float x0 = 2.0f + 16.0f * u01(rng), y0 = 2.0f + 16.0f * u01(rng);
++  const float yaw0 = 12.0f * (u01(rng) - 0.5f);  // also |yaw| > pi
++  for (int i = 0; i < batch; ++i) {
++    float x = x0, y = y0, yaw = yaw0;
++    for (int j = 0; j < steps; ++j) {
++      yaw += wz(rng) * 0.05f;
++      const float v = vx(rng);
++      x += v * std::cos(yaw) * 0.05f;
++      y += v * std::sin(yaw) * 0.05f;
++      t.x(i, j) = x; t.y(i, j) = y; t.yaws(i, j) = yaw;
++    }
++  }
++}
++
++std::unique_ptr<mppi::critics::CostCritic> makeCritic(
++  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> ros, bool bitmask, int id,
++  std::shared_ptr<nav2::LifecycleNode> & node, std::unique_ptr<mppi::ParametersHandler> & ph)
++{
++  rclcpp::NodeOptions options;
++  options.parameter_overrides({
++    {"CostCritic.consider_footprint", true},
++    {"CostCritic.near_goal_distance", 0.0},
++    {"CostCritic.trajectory_point_step", 1},
++    {"CostCritic.inflation_layer_name", "inflation_layer"},
++    {"CostCritic.num_threads", 1},
++    {"CostCritic.use_footprint_bitmask", bitmask},
++  });
++  node = std::make_shared<nav2::LifecycleNode>("eq_" + std::to_string(id), options);
++  std::string name = "mppi";
++  ph = std::make_unique<mppi::ParametersHandler>(node, name);
++  auto critic = std::make_unique<mppi::critics::CostCritic>();
++  critic->on_configure(node, "mppi", "CostCritic", ros, ph.get());
++  return critic;
++}
++
++}  // namespace
++
++int main(int argc, char ** argv)
++{
++  rclcpp::init(argc, argv);
++  const Case cases[] = {
++    {"[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]", 0.1, 5.0, false},
++    {"[ [0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25] ]", 0.05, 1.0, false},
++    {"[ [0.3, 0.0], [0.1, 0.25], [-0.25, 0.2], [-0.3, -0.1], [0.05, -0.28] ]", 0.05, 1.0, false},
++    // wider than 64 cells: mask rows are split into several words
++    {"[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]", 0.05, 3.0, false},
++    // unknown space tracked: NO_INFORMATION cells do not block
++    {"[ [2.230, 0.65], [-1.4312, 0.65], [-1.4312, -0.65], [2.230, -0.65] ]", 0.1, 5.0, true},
++    {"[ [0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25] ]", 0.05, 1.0, true},
++  };
++  const int kBatch = 400, kSteps = 60, kTrials = 150;
++  long mismatches = 0, flag_mismatch = 0, trajectory_mismatch = 0, checked = 0, colliding = 0, fail_flags = 0;
++  int id = 0;
++  for (const auto & c : cases) {
++    auto ros = makeCostmap(c, id++);
++    std::shared_ptr<nav2::LifecycleNode> na, nb;
++    std::unique_ptr<mppi::ParametersHandler> pa, pb;
++    auto plain = makeCritic(ros, false, id++, na, pa);
++    auto masked = makeCritic(ros, true, id++, nb, pb);
++    std::mt19937 rng(7 + id);
++    for (int trial = 0; trial < kTrials; ++trial) {
++      fillRandom(ros, rng);
++      mppi::models::State state;
++      state.local_path_length = 10.0f;
++      mppi::models::Trajectories traj;
++      fillTrajectories(traj, kBatch, kSteps, rng);
++      mppi::models::Path path;
++      geometry_msgs::msg::Pose goal;
++      Eigen::ArrayXf ca = Eigen::ArrayXf::Zero(kBatch), cb = Eigen::ArrayXf::Zero(kBatch);
++      float dt = 0.05f;
++      mppi::CriticData da = {state, traj, path, goal, ca, dt,
++        false, nullptr, nullptr, std::nullopt, std::nullopt, {}};
++      mppi::CriticData db = {state, traj, path, goal, cb, dt,
++        false, nullptr, nullptr, std::nullopt, std::nullopt, {}};
++      da.trajectories_in_collision.resize(kBatch, false);
++      db.trajectories_in_collision.resize(kBatch, false);
++      plain->score(da);
++      masked->score(db);
++      checked += kBatch;
++      colliding += (ca > 100.0f).count();
++      fail_flags += da.fail_flag;
++      for (int i = 0; i < kBatch; ++i) {
++        mismatches += std::memcmp(ca.data() + i, cb.data() + i, sizeof(float)) != 0;
++        trajectory_mismatch += da.trajectories_in_collision[i] != db.trajectories_in_collision[i];
++      }
++      flag_mismatch += da.fail_flag != db.fail_flag;
++    }
++  }
++  std::printf(
++    "trajectories checked %ld, colliding %ld, all-colliding batches %ld, cost mismatches %ld, fail_flag mismatches %ld, trajectory flag mismatches %ld\n",
++    checked, colliding, fail_flags, mismatches, flag_mismatch, trajectory_mismatch);
++  rclcpp::shutdown();
++  return (mismatches || flag_mismatch || trajectory_mismatch) ? 1 : 0;
++}

@@ -1,4 +1,4 @@
-"""Plot process CPU time and wall time from archived single-critic benchmarks."""
+"""Summarize the pinned Nav2 benchmark and render the comparison used in README."""
 import json
 from pathlib import Path
 
@@ -7,38 +7,49 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[1]
-RESULTS = ROOT / "nav2/results"
-VARIANTS = [
-    ("Nav2 main · 1 поток", "bench_main", 1, 0),
-    ("PR #6228 · 1 поток", "bench_pr", 1, 0),
-    ("PR #6228 · 8 потоков", "bench_pr", 8, 0),
-    ("OR-таблица и маски · 1 поток", "bench_box", 1, 1),
-]
+DATA = ROOT / "nav2/current"
+BATCHES = (32, 125, 2000)
+SCENES = ("Коридор", "У стены")
 
-def measurement(source, threads, mask, scene):
-    rows = json.loads((RESULTS / f"{source}.json").read_text())["benchmarks"]
-    prefix = f"BM_CostCritic/threads:{threads}/scene:{scene}/bitmask:{mask}/"
-    row, = [r for r in rows if r["name"].startswith(prefix) and r["aggregate_name"] == "median"]
-    assert row["time_unit"] == "us" and row["repetitions"] == 3
-    return row["real_time"] / 1000, row["cpu_time"] / 1000
+
+def median_cpu(file):
+    rows = json.loads((DATA / file).read_text())["benchmarks"]
+    result = {}
+    for row in rows:
+        if row.get("aggregate_name") != "median":
+            continue
+        fields = dict(p.split(":", 1) for p in row["run_name"].split("/") if ":" in p)
+        key = (int(fields["scene"]), int(fields["K"]), int(fields["mask"]))
+        assert key not in result and fields["threads"] == "1"
+        assert row["time_unit"] == "us" and row["repetitions"] == 5
+        result[key] = row["cpu_time"] / 1000
+    return result
+
 
 def main():
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharey=True, layout="constrained")
-    for scene, (ax, title) in enumerate(zip(axes, ["Коридор", "У стены"], strict=True)):
-        for i, (label, source, threads, mask) in enumerate(VARIANTS):
-            wall, cpu = measurement(source, threads, mask, scene)
-            print(f"{title:8}  {label:30}  wall {wall:5.2f} ms  CPU {cpu:5.2f} ms")
-            for shift, value, color, key in [(-.18, wall, "#8b9aa2", "Время до ответа"),
-                                            (.18, cpu, "#263f50", "CPU-время процесса")]:
-                ax.barh(i+shift, value, height=.32, color=color, label=key if i == 0 else None)
-                ax.text(value+.17, i+shift, f"{value:.2f}", va="center", fontsize=8)
-        ax.set(title=title, xlabel="Миллисекунды на вызов", yticks=range(len(VARIANTS)),
-               yticklabels=[v[0] for v in VARIANTS], xlim=(0, 28 if scene else 6.6))
-        ax.spines[["top", "right"]].set_visible(False)
-    axes[0].invert_yaxis()
-    fig.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=2, frameon=False)
+    upstream = median_cpu("upstream.json")
+    paired = median_cpu("paired.json")
+    assert len(upstream) == 6 and len(paired) == 12
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.8), layout="constrained", sharey=True)
+    print("| Сцена | Траекторий | Штатный Nav2, мс CPU | Фильтр выкл., мс CPU | Фильтр вкл., мс CPU |")
+    print("|---|---:|---:|---:|---:|")
+    for scene, (title, ax) in enumerate(zip(SCENES, axes, strict=True)):
+        for k in BATCHES:
+            times = [upstream[scene, k, 0], paired[scene, k, 0], paired[scene, k, 1]]
+            print(f"| {title} | {k} | " + " | ".join(f"{t:.3f}".replace(".", ",") for t in times) + " |")
+        for label, source, mask, style in [
+            ("Штатный Nav2", upstream, 0, "o-"),
+            ("Опытная сборка, фильтр выкл.", paired, 0, "x--"),
+            ("Опытная сборка, фильтр вкл.", paired, 1, "s-"),
+        ]:
+            ax.plot(range(len(BATCHES)), [source[scene,k,mask] for k in BATCHES], style, label=label)
+        ax.set(title=title, xlabel="Траекторий за вызов", xticks=range(len(BATCHES)), xticklabels=BATCHES, yscale="log")
+        ax.grid(axis="y", alpha=.2)
+    axes[0].set_ylabel("CPU-время вызова, мс (лог. шкала)")
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncols=3, frameon=False, fontsize=9)
     fig.savefig(ROOT / "docs/costcritic.png", dpi=175)
     plt.close(fig)
+
 
 if __name__ == "__main__":
     main()
