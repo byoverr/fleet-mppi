@@ -40,13 +40,17 @@ def load_series(directory):
 
 
 def print_table(upstream, paired):
-    print("| Сцена | Траекторий | Штатный Nav2, мс CPU | Фильтр выкл., мс CPU | Фильтр вкл., мс CPU |")
-    print("|---|---:|---:|---:|---:|")
+    print("| Сцена | Траекторий | Nav2, мс | Патч выкл., мс | Патч вкл., мс | Экономия, мс | Ускорение |")
+    print("|---|---:|---:|---:|---:|---:|---:|")
     for scene, title in enumerate(SCENES):
         for k in BATCHES:
-            times = upstream[scene, k, 0], paired[scene, k, 0], paired[scene, k, 1]
-            cells = " | ".join(f"{value:.3f}".replace(".", ",") for value in times)
-            print(f"| {title} | {k} | {cells} |")
+            baseline = upstream[scene, k, 0]
+            enabled = paired[scene, k, 1]
+            values = baseline, paired[scene, k, 0], enabled, baseline - enabled
+            cells = " | ".join(f"{value:.3f}".replace(".", ",") for value in values)
+            speedup = f"{baseline / enabled:.2f}".replace(".", ",")
+            print(f"| {title} | {k} | {cells} | {speedup}× |")
+
 
 
 if __name__ == "__main__":

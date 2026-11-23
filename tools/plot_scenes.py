@@ -12,7 +12,7 @@ from matplotlib.collections import PolyCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Polygon
 
-from report_costcritic import DATA, ROOT
+from report_costcritic import DATA, ROOT, load_series
 
 
 def plot(source, target):
@@ -23,7 +23,10 @@ def plot(source, target):
             scenes[int(row["scene"])][key].append((float(row["x"]), float(row["y"])))
 
     wall, path, outline = "#414851", "#247a8c", "#503e2f"
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.15), sharey=True, layout="constrained")
+    upstream, paired = load_series(DATA)
+    fig, (axes, bars) = plt.subplots(
+        2, 2, figsize=(10, 5.8), height_ratios=(3, 1), layout="constrained"
+    )
     for scene, (ax, title) in enumerate(zip(axes, ("Коридор с коробкой", "Вдоль стены"))):
         entries = scenes[scene]
         cells = [[(x + dx, y + dy) for dx, dy in
@@ -37,10 +40,20 @@ def plot(source, target):
         ax.set(aspect="equal", xlim=(9.5, 20.5), ylim=(11.4, 18.8), title=title,
                xlabel="x, м", xticks=(10, 12, 14, 16, 18, 20), yticks=(12, 14, 16, 18))
         ax.spines[["top", "right"]].set_visible(False)
+        time_ax = bars[scene]
+        values = [upstream[scene, 2000, 0], paired[scene, 2000, 1]]
+        time_ax.barh([1, 0], values, color=[wall, path], height=.5)
+        for y, value in zip([1, 0], values):
+            time_ax.text(value + .25, y, f"{value:.2f}".replace(".", ","), va="center")
+        time_ax.set(xlim=(0, 19), xticks=[0, 5, 10, 15], yticks=[1, 0],
+                    yticklabels=["Nav2", "С фильтром"], ylim=(-.5, 1.5),
+                    xlabel="мс CPU на 2000 траекторий")
+        time_ax.spines[["top", "right", "left"]].set_visible(False)
+        time_ax.tick_params(axis="y", length=0)
     axes[0].set_ylabel("y, м")
     fig.legend(handles=[Patch(color=wall, label="Клетки препятствий"),
                         Patch(facecolor="#f0e6da", edgecolor=outline, label="Корпус в начальной позе"),
-                        Line2D([], [], color=path, label="Траектории центра")],
+                        Line2D([], [], color=path, label="32 траектории центра")],
                loc="outside lower center", ncols=3, frameon=False)
     fig.savefig(target, dpi=170)
     plt.close(fig)
