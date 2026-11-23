@@ -1,5 +1,7 @@
 # Nav2 MPPI: битовые маски в CostCritic — замеры на настоящем Nav2
 
+Архив предыдущих экспериментов. [Замеры на Nav2 от 22 ноября и команды для воспроизведения](current/).
+
 *Ноябрь 2026.*
 * Nav2 main `2d3d1cc`, ROS 2 Rolling в Docker на Apple M4 (arm64, 9 vCPU для контейнера).
 * Репозиторий motion-planning-practice не тронут; всё в этой папке.

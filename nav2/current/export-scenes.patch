@@ -1,0 +1,67 @@
+--- a/nav2_mppi_controller/fleet_benchmark/fleet_cost_critic.cpp
++++ b/nav2_mppi_controller/fleet_benchmark/fleet_cost_critic.cpp
+@@ -17,6 +17,8 @@
+ #include <algorithm>
+ #include <chrono>
+ #include <cmath>
++#include <fstream>
++#include <iomanip>
+ #include <memory>
+ #include <random>
+ #include <string>
+@@ -220,6 +222,43 @@
+   const size_t k = static_cast<size_t>(p * static_cast<double>(samples.size() - 1));
+   std::nth_element(samples.begin(), samples.begin() + k, samples.end());
+   return samples[k];
++}
++
++// Export inputs from the same generators as the timing experiment.
++bool exportScenes(const char * filename)
++{
++  std::ofstream output(filename);
++  output << std::setprecision(9) << "scene,kind,id,step,x,y\n";
++  for (int scene = 0; scene < 2; ++scene) {
++    auto ros = makeCostmapRos();
++    fillScene(ros, scene);
++    auto * cm = ros->getCostmap();
++    for (unsigned int j = 0; j < cm->getSizeInCellsY(); ++j) {
++      for (unsigned int i = 0; i < cm->getSizeInCellsX(); ++i) {
++        if (cm->getCost(i, j) == nav2_costmap_2d::LETHAL_OBSTACLE) {
++          double x, y;
++          cm->mapToWorld(i, j, x, y);
++          output << scene << ",cell,0,0," << x << "," << y << "\n";
++        }
++      }
++    }
++    int vertex = 0;
++    for (const auto & point : ros->getRobotFootprint()) {
++      output << scene << ",footprint,0," << vertex++ << ","
++             << kRobotX + point.x << "," << kRobotY + point.y << "\n";
++    }
++    mppi::models::Trajectories paths;
++    fillTrajectories(paths, scene == 0 ? 0.08f : kWallWzBiasStd, 32);
++    for (int i = 0; i < paths.x.rows(); ++i) {
++      output << scene << ",path," << i << ",0," << kRobotX << "," << kRobotY << "\n";
++      for (int j = 0; j < paths.x.cols(); ++j) {
++        output << scene << ",path," << i << "," << j + 1 << "," << paths.x(i, j)
++               << "," << paths.y(i, j) << "\n";
++      }
++    }
++  }
++  output.close();
++  return static_cast<bool>(output);
+ }
+ 
+ }  // namespace
+@@ -300,6 +339,11 @@
+ {
+   // rclcpp is shut down explicitly here: from a static destructor it aborts inside rmw_zenoh
+   rclcpp::init(argc, argv);
++  if (argc == 3 && std::string(argv[1]) == "--export-scenes") {
++    const bool success = exportScenes(argv[2]);
++    rclcpp::shutdown();
++    return success ? 0 : 1;
++  }
+   benchmark::Initialize(&argc, argv);
+   benchmark::RunSpecifiedBenchmarks();
+   benchmark::Shutdown();
